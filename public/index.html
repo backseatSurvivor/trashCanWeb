@@ -74,6 +74,7 @@
   .clock {
     font-size: 14px;
     font-weight: 400;
+    font-variant-numeric: tabular-nums;
   }
   .top-row {
     display: grid;
@@ -412,7 +413,8 @@
       <button class="ctrl" id="sp0" onclick="sendAct('SPEED', 0)">実時間 (1)</button>
       <button class="ctrl" id="sp1" onclick="sendAct('SPEED', 1)">×60 1秒=1分 (2)</button>
       <button class="ctrl" id="sp2" onclick="sendAct('SPEED', 2)">×3600 1秒=1時間 (3)</button>
-      <button class="ctrl" id="sp3" onclick="sendAct('SPEED', 3)">×86400 1秒=1日 (4)</button>
+      <button class="ctrl" id="sp3" onclick="sendAct('SPEED', 3)">×21600 1秒=6時間 (4)</button>
+      <button class="ctrl" id="sp4" onclick="sendAct('SPEED', 4)">×86400 1秒=1日 (5)</button>
 
       <span style="opacity:0.4; margin:0 4px;">|</span>
 
@@ -436,6 +438,8 @@ const JST_OFFSET = 9 * HOUR_MS;
 const WD = ['月', '火', '水', '木', '金', '土', '日'];
 const INK = '#205182';
 const ACCENT = '#D6589A';
+const SPEED_SCALES = [1, 60, 3600, 21600, 86400];
+const SPEED_BADGES = ['×1', '×60 (1秒=1分)', '×3600 (1秒=1時間)', '×21600 (1秒=6時間)', '×86400 (1秒=1日)'];
 
 function jstDate(ms) { return new Date(ms + JST_OFFSET); }
 function getDow1to7(ms) { const d = jstDate(ms).getUTCDay(); return d === 0 ? 7 : d; }
@@ -477,6 +481,14 @@ function nextDeadlineClient(after, cfg) {
 
 let dispFill = 0, dispA = 0, dispB = 0, dispYen = 0, dispCo2 = 0;
 let latestData = null;
+let lastPollPerfMs = performance.now();
+
+// 60fps描画用に仮想時刻を滑らかに補間する
+function getSmoothVNow() {
+  if (!latestData) return Date.now();
+  const elapsed = Math.min(350, Math.max(0, performance.now() - lastPollPerfMs));
+  return latestData.vNow + elapsed * latestData.timeScale;
+}
 
 async function sendAct(act, val) {
   await fetch('/api/action', {
@@ -497,29 +509,38 @@ window.addEventListener('keydown', (e) => {
   else if (k === 'f') sendAct('CAL_FULL');
   else if (k === 'a') sendAct('AUTO');
   else if (k === '0') sendAct('RESET_CLOCK');
-  else if (k >= '1' && k <= '4') sendAct('SPEED', parseInt(k, 10) - 1);
+  else if (k >= '1' && k <= '5') sendAct('SPEED', parseInt(k, 10) - 1);
 });
 
 async function poll() {
   try {
     const res = await fetch('/api/state');
     latestData = await res.json();
+    lastPollPerfMs = performance.now();
     updateDOM(latestData);
   } catch (e) {}
 }
 
+function getSpeedIndex(scale) {
+  let best = 0;
+  let minDiff = Infinity;
+  for (let i = 0; i < SPEED_SCALES.length; i++) {
+    const diff = Math.abs(SPEED_SCALES[i] - scale);
+    if (diff < minDiff) { minDiff = diff; best = i; }
+  }
+  return best;
+}
+
 function updateDOM(data) {
   const { cfg, autoLid, timeScale, vNow, alive, errActive, model: m } = data;
+  const spIdx = getSpeedIndex(timeScale);
 
-  document.getElementById('clockText').textContent = `${md(vNow)}  ${hm(vNow)}`;
   document.getElementById('liveBadge').textContent = alive ? 'LIVE  WIFI' : 'NO SIGNAL';
 
   const speedBadge = document.getElementById('speedBadge');
   if (timeScale > 1) {
-    const nm = ['×1', '×60 (1秒=1分)', '×3600 (1秒=1時間)', '×86400 (1秒=1日)'];
-    const idx = timeScale <= 1 ? 0 : timeScale <= 60 ? 1 : timeScale <= 3600 ? 2 : 3;
     speedBadge.style.display = 'inline-block';
-    speedBadge.textContent = `FAST FORWARD  ${nm[idx]}`;
+    speedBadge.textContent = `FAST FORWARD  ${SPEED_BADGES[spIdx]}`;
   } else {
     speedBadge.style.display = 'none';
   }
@@ -562,7 +583,7 @@ function updateDOM(data) {
     const days = dayKey(vNow) - dayKey(m.lastThrowT);
     const t = hm(m.lastThrowT);
     const when = days === 0 ? t : (days === 1 ? `昨日 ${t}` : `${md(m.lastThrowT)} ${t}`);
-    document.getElementById('lastThrowText').textContent = `最後の投入　${when}　+${Math.round(m.lastThrowPct)}%`;
+    document.getElementById('lastThrowText').textContent = `最後の投入 ${when} +${Math.round(m.lastThrowPct)}%`;
   }
 
   document.getElementById('savedBagsText').textContent = `指定袋 ${m.savedBags} 枚ぶん`;
@@ -595,8 +616,7 @@ function updateDOM(data) {
   document.getElementById('btnAuto').textContent = `自動開閉: ${autoLid ? 'ON' : 'OFF'} (A)`;
   document.getElementById('trackedText').textContent = `記録 ${m.daysTracked.toFixed(1)} 日`;
 
-  const spIdx = timeScale <= 1 ? 0 : timeScale <= 60 ? 1 : timeScale <= 3600 ? 2 : 3;
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < SPEED_SCALES.length; i++) {
     document.getElementById('sp' + i).className = (i === spIdx) ? 'ctrl active' : 'ctrl';
   }
 
@@ -629,13 +649,17 @@ function syncToasts(toasts) {
 
 function renderLoop() {
   if (latestData) {
-    const { cfg, vNow, model: m } = latestData;
-    const e = 0.14;
+    const { cfg, model: m } = latestData;
+    const smoothNow = getSmoothVNow();
+
+    document.getElementById('clockText').textContent = `${md(smoothNow)}  ${hm(smoothNow)}`;
+
+    const e = 0.16;
     dispFill += (m.fill - dispFill) * e;
     dispA += (Math.max(m.pctA, 0) - dispA) * e;
     dispB += (Math.max(m.pctB, 0) - dispB) * e;
-    dispYen += (m.yenSaved - dispYen) * 0.12;
-    dispCo2 += (m.co2G - dispCo2) * 0.12;
+    dispYen += (m.yenSaved - dispYen) * 0.15;
+    dispCo2 += (m.co2G - dispCo2) * 0.15;
 
     document.getElementById('fillNum').textContent = Math.round(dispFill);
     document.getElementById('barA').style.height = Math.min(100, Math.max(0, dispA)) + '%';
@@ -647,7 +671,7 @@ function renderLoop() {
     document.getElementById('co2Big').textContent = isKg ? (dispCo2 / 1000).toFixed(2) : Math.round(dispCo2);
     document.getElementById('co2Unit').textContent = (isKg ? 'kg' : 'g') + ' CO2';
 
-    drawHistoryCanvas(m, vNow, cfg);
+    drawHistoryCanvas(m, smoothNow, cfg);
   }
   requestAnimationFrame(renderLoop);
 }
@@ -673,136 +697,4 @@ function drawHistoryCanvas(m, vNow, cfg) {
   const tB = Math.min(vNow + 8 * DAY_MS, Math.max(vNow + 3 * DAY_MS, tg + 12 * HOUR_MS));
 
   const tx = t => px + ((t - tA) / (tB - tA)) * pw;
-  const ty = f => py + ph - (Math.min(100, Math.max(0, f)) / 100.0) * ph;
-
-  ctx.font = '11px Inter, sans-serif';
-  ctx.textAlign = 'right';
-  ctx.textBaseline = 'middle';
-  for (let v = 0; v <= 100; v += 50) {
-    const yy = ty(v);
-    ctx.strokeStyle = v === 0 ? 'rgba(32,81,130,0.35)' : 'rgba(32,81,130,0.12)';
-    ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(px, yy); ctx.lineTo(px + pw, yy); ctx.stroke();
-    ctx.fillStyle = 'rgba(32,81,130,0.6)';
-    ctx.fillText(v + '%', px - 8, yy);
-  }
-
-  const d0 = jstDate(tA);
-  const baseDayMs = Date.UTC(d0.getUTCFullYear(), d0.getUTCMonth(), d0.getUTCDate()) - JST_OFFSET;
-  ctx.font = '11px "Noto Sans JP", sans-serif';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
-  for (let i = 0; i <= 13; i++) {
-    const ms = baseDayMs + i * DAY_MS;
-    if (ms < tA || ms > tB) continue;
-    const X = tx(ms);
-    ctx.strokeStyle = 'rgba(32,81,130,0.09)';
-    ctx.beginPath(); ctx.moveTo(X, py); ctx.lineTo(X, py + ph); ctx.stroke();
-    if (X > px + pw - 44) continue;
-    const jd = jstDate(ms);
-    ctx.fillStyle = 'rgba(32,81,130,0.6)';
-    ctx.fillText(`${jd.getUTCDate()}（${WD[getDow1to7(ms) - 1]}）`, X + 4, py + ph + 6);
-  }
-
-  let dl = nextDeadlineClient(tA - 1, cfg);
-  ctx.font = '10px "Noto Sans JP", sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'bottom';
-  while (dl < tB) {
-    const X = tx(dl);
-    ctx.save();
-    ctx.strokeStyle = 'rgba(32,81,130,0.35)';
-    ctx.setLineDash([3, 4]);
-    ctx.beginPath(); ctx.moveTo(X, py); ctx.lineTo(X, py + ph); ctx.stroke();
-    ctx.restore();
-    ctx.fillStyle = 'rgba(32,81,130,0.55)';
-    ctx.fillText('収集', X, py - 3);
-    dl = nextDeadlineClient(dl, cfg);
-  }
-
-  let prev = m.hist.length > 0 ? m.hist[0].f : 0;
-  for (const s of m.hist) {
-    if (s.t <= tA) prev = s.f;
-    else break;
-  }
-  const nowX = tx(vNow);
-
-  ctx.fillStyle = 'rgba(32, 81, 130, 0.15)';
-  ctx.beginPath();
-  ctx.moveTo(px, ty(0));
-  ctx.lineTo(px, ty(prev));
-  let pv = prev;
-  for (const s of m.hist) {
-    if (s.t <= tA || s.t > vNow) continue;
-    const X = tx(s.t);
-    ctx.lineTo(X, ty(pv));
-    ctx.lineTo(X, ty(s.f));
-    pv = s.f;
-  }
-  ctx.lineTo(nowX, ty(pv));
-  ctx.lineTo(nowX, ty(0));
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(px, ty(prev));
-  pv = prev;
-  for (const s of m.hist) {
-    if (s.t <= tA || s.t > vNow) continue;
-    const X = tx(s.t);
-    ctx.lineTo(X, ty(pv));
-    ctx.lineTo(X, ty(s.f));
-    pv = s.f;
-  }
-  ctx.lineTo(nowX, ty(pv));
-  ctx.stroke();
-
-  if (m.rate > 0 && m.fill < 100) {
-    const tEnd = m.tFull > 0 ? Math.min(m.tFull, tB) : tB;
-    const fEnd = Math.min(100, m.fill + (m.rate * (tEnd - vNow)) / HOUR_MS);
-    ctx.save();
-    ctx.strokeStyle = 'rgba(32, 81, 130, 0.78)';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([6, 5]);
-    ctx.beginPath();
-    ctx.moveTo(nowX, ty(m.fill));
-    ctx.lineTo(tx(tEnd), ty(fEnd));
-    if (tEnd < tB) ctx.lineTo(px + pw, ty(100));
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  ctx.strokeStyle = 'rgba(32, 81, 130, 0.65)';
-  ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(nowX, py - 4); ctx.lineTo(nowX, py + ph); ctx.stroke();
-  ctx.font = 'bold 10px Inter, sans-serif';
-  ctx.fillStyle = 'rgba(32, 81, 130, 0.8)';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
-  ctx.fillText('NOW', nowX + 4, py + 2);
-
-  if (tg > 0 && tg <= tB) {
-    const f = m.rate > 0 ? Math.min(100, m.fill + (m.rate * (tg - vNow)) / HOUR_MS) : m.fill;
-    const X = tx(tg), Y = ty(f);
-    ctx.fillStyle = 'rgba(214, 88, 154, 0.24)';
-    ctx.beginPath(); ctx.arc(X, Y, 13, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = ACCENT;
-    ctx.beginPath(); ctx.arc(X, Y, 5.5, 0, Math.PI * 2); ctx.fill();
-
-    ctx.font = 'bold 12px "Noto Sans JP", sans-serif';
-    ctx.textAlign = X > px + pw - 60 ? 'right' : 'center';
-    ctx.textBaseline = 'bottom';
-    ctx.fillText('ここで出す', X > px + pw - 60 ? X + 6 : X, Y - 14);
-  }
-
-  ctx.restore();
-}
-
-setInterval(poll, 250);
-poll();
-requestAnimationFrame(renderLoop);
-</script>
-</body>
-</html>
+  const ty = f => py + ph - (Math.min(100, Math.max(0, f)) / 100.0)
