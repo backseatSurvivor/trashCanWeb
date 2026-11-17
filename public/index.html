@@ -21,7 +21,6 @@
     min-height: 100vh;
     font-family: 'Noto Sans JP', sans-serif;
     color: #fff;
-    /* Theme.pde の背景グラデーションと光の再現 */
     background:
       radial-gradient(circle at 10% 105%, rgba(243, 205, 228, 0.55) 0%, transparent 45%),
       radial-gradient(circle at 100% 5%, rgba(120, 135, 245, 0.35) 0%, transparent 40%),
@@ -38,8 +37,6 @@
     flex-direction: column;
     gap: 22px;
   }
-
-  /* 字間を空けた英字ラベル */
   .cap {
     font-family: 'Inter', sans-serif;
     font-weight: 700;
@@ -47,8 +44,6 @@
     letter-spacing: 0.16em;
     text-transform: uppercase;
   }
-
-  /* ヘッダー */
   header {
     display: flex;
     justify-content: space-between;
@@ -59,15 +54,18 @@
   .header-right {
     display: flex;
     align-items: baseline;
-    gap: 24px;
+    gap: 20px;
   }
-  .mode-link {
+  .status-pill {
     border-bottom: 1px solid rgba(255,255,255,0.6);
     padding-bottom: 3px;
-    cursor: pointer;
-    opacity: 0.9;
+    opacity: 0.92;
   }
-  .mode-link:hover { opacity: 1; }
+  .speed-pill {
+    background: rgba(214, 88, 154, 0.85);
+    padding: 3px 10px;
+    color: #fff;
+  }
   .err-badge {
     background: var(--accent);
     padding: 3px 10px;
@@ -77,8 +75,6 @@
     font-size: 14px;
     font-weight: 400;
   }
-
-  /* 上段レイアウト（Hero + Fill level） */
   .top-row {
     display: grid;
     grid-template-columns: 1fr 460px;
@@ -88,8 +84,6 @@
   @media (max-width: 980px) {
     .top-row { grid-template-columns: 1fr; }
   }
-
-  /* Hero（今日の判断） */
   .hero {
     display: flex;
     flex-direction: column;
@@ -136,8 +130,6 @@
   }
   .agenda-num { opacity: 0.6; }
   .agenda-val { font-size: 17px; }
-
-  /* 角の立った半透明パネル（Theme.pde の card） */
   .card {
     background: linear-gradient(180deg, rgba(200, 209, 252, 0.93) 0%, rgba(248, 241, 247, 0.93) 100%);
     border-top: 1px solid rgba(255, 255, 255, 0.78);
@@ -153,8 +145,6 @@
     align-items: baseline;
     margin-bottom: 12px;
   }
-
-  /* 充填率カード */
   .fill-body {
     display: flex;
     justify-content: space-between;
@@ -169,10 +159,7 @@
   }
   .fill-num { font-size: 112px; letter-spacing: -0.03em; }
   .fill-pct { font-size: 46px; margin-left: 4px; }
-  .bars {
-    display: flex;
-    gap: 14px;
-  }
+  .bars { display: flex; gap: 14px; }
   .bar-col {
     display: flex;
     flex-direction: column;
@@ -195,8 +182,6 @@
   .bar-lbl { font-size: 11px; opacity: 0.72; }
   .fill-foot { font-size: 13px; line-height: 1.65; }
   .fill-foot .sub { opacity: 0.62; }
-
-  /* 下段3枚カード */
   .bottom-row {
     display: grid;
     grid-template-columns: 600px 1fr 1fr;
@@ -205,8 +190,6 @@
   @media (max-width: 1080px) {
     .bottom-row { grid-template-columns: 1fr; }
   }
-
-  /* 推移グラフ */
   #histCanvas {
     width: 100%;
     height: 210px;
@@ -217,8 +200,6 @@
     opacity: 0.62;
     margin-top: 6px;
   }
-
-  /* 節約・環境カード */
   .big-stat {
     font-family: 'Inter', sans-serif;
     font-weight: 200;
@@ -248,8 +229,6 @@
   .eco-sub-title { font-size: 11.5px; opacity: 0.72; margin-bottom: 8px; }
   .eco-big { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
   .eco-line { font-size: 13px; margin-bottom: 4px; }
-
-  /* フッター＆展示用コントロールバー */
   footer {
     display: flex;
     justify-content: space-between;
@@ -266,7 +245,7 @@
     align-items: center;
   }
   button.ctrl {
-    background: rgba(255, 255, 255, 0.65);
+    background: rgba(255, 255, 255, 0.68);
     border: 1px solid rgba(32, 81, 130, 0.25);
     color: var(--ink);
     padding: 5px 10px;
@@ -280,15 +259,12 @@
     background: var(--ink);
     color: #fff;
     border-color: var(--ink);
-  }
-  button.ctrl.accent {
-    background: var(--accent);
-    color: #fff;
-    border-color: var(--accent);
     font-weight: 700;
   }
-
-  /* トースト通知 */
+  button.ctrl.warn {
+    border-color: rgba(214, 88, 154, 0.5);
+    color: #9e2a66;
+  }
   .toast-wrap {
     position: fixed;
     top: 14px;
@@ -320,13 +296,13 @@
     <div class="cap" style="opacity:0.92;">Smart Bin &nbsp;/&nbsp; Sapporo</div>
     <div class="header-right">
       <div id="errBadge" class="cap err-badge" style="display:none;"></div>
-      <div id="modeBadge" class="cap mode-link" onclick="sendAct('TOGGLE_MODE')" title="クリックでデモ/実機を切替">LIVE</div>
+      <div id="speedBadge" class="cap speed-pill" style="display:none;"></div>
+      <div id="liveBadge" class="cap status-pill">NO SIGNAL</div>
       <div id="clockText" class="clock">--/--（-） --:--</div>
     </div>
   </header>
 
   <div class="top-row">
-    <!-- 今日の判断 -->
     <section class="hero">
       <div>
         <div class="cap" style="opacity:0.75;">Today's call</div>
@@ -350,7 +326,6 @@
       </div>
     </section>
 
-    <!-- 充填率 -->
     <section class="card">
       <div class="card-head">
         <span class="cap">Fill level</span>
@@ -383,7 +358,6 @@
   </div>
 
   <div class="bottom-row">
-    <!-- 推移と予測 -->
     <section class="card">
       <div class="card-head">
         <span class="cap">Fill history</span>
@@ -393,7 +367,6 @@
       <div id="rateSrcText" class="card-note">予測の根拠：データを集めています</div>
     </section>
 
-    <!-- 節約 -->
     <section class="card">
       <div class="card-head">
         <span class="cap">Money saved</span>
@@ -410,7 +383,6 @@
       <div id="moneyNote" class="card-note">札幌市指定袋 20L・1枚 40円で計算</div>
     </section>
 
-    <!-- 環境への効果 -->
     <section class="card">
       <div class="card-head">
         <span class="cap">Eco impact</span>
@@ -431,23 +403,22 @@
 
   <footer>
     <div class="ctrl-group">
-      <button class="ctrl accent" onclick="sendAct('TOGGLE_MODE')" id="btnMode">デモへ切替 (D)</button>
+      <span style="font-weight:700; margin-right:2px;">時間の速さ:</span>
+      <button class="ctrl" id="sp0" onclick="sendAct('SPEED', 0)">実時間 (1)</button>
+      <button class="ctrl" id="sp1" onclick="sendAct('SPEED', 1)">×60 1秒=1分 (2)</button>
+      <button class="ctrl" id="sp2" onclick="sendAct('SPEED', 2)">×3600 1秒=1時間 (3)</button>
+      <button class="ctrl" id="sp3" onclick="sendAct('SPEED', 3)">×86400 1秒=1日 (4)</button>
+
+      <span style="opacity:0.4; margin:0 4px;">|</span>
+
       <button class="ctrl" onclick="sendAct('THROW')">投入 (T)</button>
       <button class="ctrl" onclick="sendAct('RESET')">袋を出した (R)</button>
       <button class="ctrl" onclick="sendAct('OPEN')">フタ開 (O)</button>
-      <button class="ctrl" onclick="sendAct('CLOSE')" id="btnClose">フタ閉 (C)</button>
-      <span id="speedGroup" style="display:none; gap:4px; align-items:center; margin-left:6px;">
-        <span style="opacity:0.75;">速度:</span>
-        <button class="ctrl" id="sp0" onclick="sendAct('SPEED', 0)">×1 (1)</button>
-        <button class="ctrl" id="sp1" onclick="sendAct('SPEED', 1)">×60 (2)</button>
-        <button class="ctrl" id="sp2" onclick="sendAct('SPEED', 2)">×3600 (3)</button>
-        <button class="ctrl" id="sp3" onclick="sendAct('SPEED', 3)">×86400 (4)</button>
-      </span>
-      <span id="liveGroup" style="display:flex; gap:4px; align-items:center; margin-left:6px;">
-        <button class="ctrl" onclick="sendAct('CAL_EMPTY')">空基準 (E)</button>
-        <button class="ctrl" onclick="sendAct('CAL_FULL')">満杯基準 (F)</button>
-        <button class="ctrl" onclick="sendAct('AUTO')" id="btnAuto">自動開閉: ON (A)</button>
-      </span>
+      <button class="ctrl" onclick="sendAct('CLOSE')">フタ閉 (C)</button>
+      <button class="ctrl" onclick="sendAct('CAL_EMPTY')">空基準 (E)</button>
+      <button class="ctrl" onclick="sendAct('CAL_FULL')">満杯基準 (F)</button>
+      <button class="ctrl" onclick="sendAct('AUTO')" id="btnAuto">自動開閉: ON (A)</button>
+      <button class="ctrl warn" onclick="sendAct('RESET_CLOCK')">記録リセット (0)</button>
     </div>
     <div id="trackedText" style="opacity:0.75;">記録 0.0 日</div>
   </footer>
@@ -499,7 +470,6 @@ function nextDeadlineClient(after, cfg) {
   return after + 7 * DAY_MS;
 }
 
-// アニメーション用補間値
 let dispFill = 0, dispA = 0, dispB = 0, dispYen = 0, dispCo2 = 0;
 let latestData = null;
 
@@ -511,7 +481,6 @@ async function sendAct(act, val) {
   poll();
 }
 
-// キーボードショートカット（SmartBinUI と同じ操作感）
 window.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT') return;
   const k = e.key.toLowerCase();
@@ -522,7 +491,7 @@ window.addEventListener('keydown', (e) => {
   else if (k === 'e') sendAct('CAL_EMPTY');
   else if (k === 'f') sendAct('CAL_FULL');
   else if (k === 'a') sendAct('AUTO');
-  else if (k === 'd') sendAct('TOGGLE_MODE');
+  else if (k === '0') sendAct('RESET_CLOCK');
   else if (k >= '1' && k <= '4') sendAct('SPEED', parseInt(k, 10) - 1);
 });
 
@@ -535,17 +504,19 @@ async function poll() {
 }
 
 function updateDOM(data) {
-  const { cfg, demo, autoLid, timeScale, vNow, alive, errActive, model: m } = data;
+  const { cfg, autoLid, timeScale, vNow, alive, errActive, model: m } = data;
 
-  // ヘッダー
   document.getElementById('clockText').textContent = `${md(vNow)}  ${hm(vNow)}`;
-  const modeBadge = document.getElementById('modeBadge');
-  if (demo) {
-    const nm = ['x1', 'x60', 'x3600', 'x86400'];
+  document.getElementById('liveBadge').textContent = alive ? 'LIVE  WIFI' : 'NO SIGNAL';
+
+  const speedBadge = document.getElementById('speedBadge');
+  if (timeScale > 1) {
+    const nm = ['×1', '×60 (1秒=1分)', '×3600 (1秒=1時間)', '×86400 (1秒=1日)'];
     const idx = timeScale <= 1 ? 0 : timeScale <= 60 ? 1 : timeScale <= 3600 ? 2 : 3;
-    modeBadge.textContent = `DEMO  ${nm[idx]}`;
+    speedBadge.style.display = 'inline-block';
+    speedBadge.textContent = `FAST FORWARD  ${nm[idx]}`;
   } else {
-    modeBadge.textContent = alive ? 'LIVE  WIFI' : 'NO SIGNAL';
+    speedBadge.style.display = 'none';
   }
 
   const errBadge = document.getElementById('errBadge');
@@ -556,7 +527,6 @@ function updateDOM(data) {
     errBadge.style.display = 'none';
   }
 
-  // 今日の判断
   document.getElementById('headline').textContent = m.headline;
   document.getElementById('subline').textContent = m.sub;
   const bar = document.getElementById('heroBar');
@@ -566,7 +536,6 @@ function updateDOM(data) {
   document.getElementById('agFull').textContent = m.fill >= 100 ? '満杯です' : (m.tFull > 0 ? whenText(m.tFull, vNow) : '学習中');
   document.getElementById('agPace').textContent = m.rate > 0 ? `1日に +${Math.round(m.rate * 24)}%` : '学習中';
 
-  // 充填率カード
   const lidNames = ['Lid closed', 'Lid opening', 'Lid open', 'Lid closing'];
   const lidEl = document.getElementById('lidText');
   lidEl.textContent = lidNames[Math.min(3, Math.max(0, m.lid))];
@@ -591,14 +560,12 @@ function updateDOM(data) {
     document.getElementById('lastThrowText').textContent = `最後の投入 ${when} +${Math.round(m.lastThrowPct)}%`;
   }
 
-  // 節約カード
   document.getElementById('savedBagsText').textContent = `指定袋 ${m.savedBags} 枚ぶん`;
   document.getElementById('naiveBagsVal').textContent = `${m.savedBags + m.usedBags} 枚`;
   document.getElementById('usedBagsVal').textContent = `${m.usedBags} 枚`;
   document.getElementById('avgUseVal').textContent = m.avgUse < 0 ? '—' : `${Math.round(m.avgUse)} %`;
   document.getElementById('moneyNote').textContent = `札幌市指定袋 ${cfg.BAG_LITERS}L・1枚 ${m.bagYen}円で計算`;
 
-  // 環境効果カード
   document.getElementById('plasticText').textContent = `プラスチック ${Math.round(m.plasticG)} g を削減`;
   document.getElementById('ecoNote').textContent = `袋1枚 ${Math.round(cfg.BAG_GRAMS)}g を焼却した場合の試算`;
 
@@ -617,15 +584,9 @@ function updateDOM(data) {
     `;
   }
 
-  // グラフ注釈
   document.getElementById('rateSrcText').textContent =
     `予測の根拠：${m.rateSrc ? m.rateSrc : 'データを集めています'}`;
 
-  // フッターボタン状態
-  document.getElementById('btnMode').textContent = demo ? '実機へ切替 (D)' : 'デモへ切替 (D)';
-  document.getElementById('speedGroup').style.display = demo ? 'flex' : 'none';
-  document.getElementById('liveGroup').style.display = demo ? 'none' : 'flex';
-  document.getElementById('btnClose').style.display = demo ? 'none' : 'inline-block';
   document.getElementById('btnAuto').textContent = `自動開閉: ${autoLid ? 'ON' : 'OFF'} (A)`;
   document.getElementById('trackedText').textContent = `記録 ${m.daysTracked.toFixed(1)} 日`;
 
@@ -634,12 +595,10 @@ function updateDOM(data) {
     document.getElementById('sp' + i).className = (i === spIdx) ? 'ctrl active' : 'ctrl';
   }
 
-  // トースト通知
   const tw = document.getElementById('toastWrap');
   tw.innerHTML = m.toasts.map(t => `<div class="toast">${t.text}</div>`).join('');
 }
 
-// 60fps スムーズ数値・グラフ描画ループ（View.pde の再現）
 function renderLoop() {
   if (latestData) {
     const { cfg, vNow, model: m } = latestData;
@@ -688,7 +647,6 @@ function drawHistoryCanvas(m, vNow, cfg) {
   const tx = t => px + ((t - tA) / (tB - tA)) * pw;
   const ty = f => py + ph - (Math.min(100, Math.max(0, f)) / 100.0) * ph;
 
-  // 目盛り
   ctx.font = '11px Inter, sans-serif';
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
@@ -701,7 +659,6 @@ function drawHistoryCanvas(m, vNow, cfg) {
     ctx.fillText(v + '%', px - 8, yy);
   }
 
-  // 日付グリッド
   const d0 = jstDate(tA);
   const baseDayMs = Date.UTC(d0.getUTCFullYear(), d0.getUTCMonth(), d0.getUTCDate()) - JST_OFFSET;
   ctx.font = '11px "Noto Sans JP", sans-serif';
@@ -719,7 +676,6 @@ function drawHistoryCanvas(m, vNow, cfg) {
     ctx.fillText(`${jd.getUTCDate()}（${WD[getDow1to7(ms) - 1]}）`, X + 4, py + ph + 6);
   }
 
-  // 収集日の締切線
   let dl = nextDeadlineClient(tA - 1, cfg);
   ctx.font = '10px "Noto Sans JP", sans-serif';
   ctx.textAlign = 'center';
@@ -736,7 +692,6 @@ function drawHistoryCanvas(m, vNow, cfg) {
     dl = nextDeadlineClient(dl, cfg);
   }
 
-  // 実績値の算出
   let prev = m.hist.length > 0 ? m.hist[0].f : 0;
   for (const s of m.hist) {
     if (s.t <= tA) prev = s.f;
@@ -744,7 +699,6 @@ function drawHistoryCanvas(m, vNow, cfg) {
   }
   const nowX = tx(vNow);
 
-  // 塗りつぶし
   ctx.fillStyle = 'rgba(32, 81, 130, 0.15)';
   ctx.beginPath();
   ctx.moveTo(px, ty(0));
@@ -762,7 +716,6 @@ function drawHistoryCanvas(m, vNow, cfg) {
   ctx.closePath();
   ctx.fill();
 
-  // 実線
   ctx.strokeStyle = INK;
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -778,7 +731,6 @@ function drawHistoryCanvas(m, vNow, cfg) {
   ctx.lineTo(nowX, ty(pv));
   ctx.stroke();
 
-  // 予測点線
   if (m.rate > 0 && m.fill < 100) {
     const tEnd = m.tFull > 0 ? Math.min(m.tFull, tB) : tB;
     const fEnd = Math.min(100, m.fill + (m.rate * (tEnd - vNow)) / HOUR_MS);
@@ -794,7 +746,6 @@ function drawHistoryCanvas(m, vNow, cfg) {
     ctx.restore();
   }
 
-  // NOW 線
   ctx.strokeStyle = 'rgba(32, 81, 130, 0.65)';
   ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(nowX, py - 4); ctx.lineTo(nowX, py + ph); ctx.stroke();
@@ -804,7 +755,6 @@ function drawHistoryCanvas(m, vNow, cfg) {
   ctx.textBaseline = 'top';
   ctx.fillText('NOW', nowX + 4, py + 2);
 
-  // 「ここで出す」マーカー
   if (tg > 0 && tg <= tB) {
     const f = m.rate > 0 ? Math.min(100, m.fill + (m.rate * (tg - vNow)) / HOUR_MS) : m.fill;
     const X = tx(tg), Y = ty(f);
@@ -822,7 +772,7 @@ function drawHistoryCanvas(m, vNow, cfg) {
   ctx.restore();
 }
 
-setInterval(poll, 300);
+setInterval(poll, 250);
 poll();
 requestAnimationFrame(renderLoop);
 </script>
