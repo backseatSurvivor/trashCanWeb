@@ -1,6 +1,7 @@
 {
-  "name": "smart-trashcan-server",
-  "version": "1.0.0",
+  "name": "smartbin-server",
+  "version": "1.1.0",
+  "description": "Smart Bin Cloud Server & Dashboard",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

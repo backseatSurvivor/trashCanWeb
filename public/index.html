@@ -562,7 +562,7 @@ function updateDOM(data) {
     const days = dayKey(vNow) - dayKey(m.lastThrowT);
     const t = hm(m.lastThrowT);
     const when = days === 0 ? t : (days === 1 ? `昨日 ${t}` : `${md(m.lastThrowT)} ${t}`);
-    document.getElementById('lastThrowText').textContent = `最後の投入 ${when} +${Math.round(m.lastThrowPct)}%`;
+    document.getElementById('lastThrowText').textContent = `最後の投入　${when}　+${Math.round(m.lastThrowPct)}%`;
   }
 
   document.getElementById('savedBagsText').textContent = `指定袋 ${m.savedBags} 枚ぶん`;

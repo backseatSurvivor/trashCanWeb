@@ -20,8 +20,7 @@ const CFG = {
   CO2_PER_G_PE: 3.14,          // PE 1g 焼却時の CO2 [g]
   CEDAR_KG_PER_YEAR: 8.8,      // スギ1本の年間CO2吸収量 [kg]
   SAPPORO_HOUSEHOLDS: 1005912, // 札幌市の世帯数
-  MAX_HOLD_DAYS: 8,            // 衛生上の最長保管日数
-  MIN_FILL_TO_COUNT: 5         // ごみなしとみなす閾値 [%]
+  MIN_FILL_TO_COUNT: 5         // ごみなし（ほぼゼロ）とみなす閾値 [%]
 };
 
 const MIN_MS = 60000;
@@ -97,6 +96,7 @@ class Model {
     this.lastRxRealMs = -100000;
     this.errCode = 0;
     this.errRealMs = -100000;
+    this.ignoreStaleUntilRealMs = 0;
 
     this.hist = [{ t: start, f: 0 }];
     this.log = [];
@@ -133,7 +133,6 @@ class Model {
   }
 
   evToast(text) {
-    // 高速早送り中はトーストが溜まりすぎないよう抑制
     if (timeScale > 60) return;
     this.pushToast(text);
   }
@@ -154,21 +153,32 @@ class Model {
     } else if (k === 'S' && p.length >= 7) {
       this.lid = parseInt(p[2], 10) || 0;
       this.dHand = parseInt(p[3], 10);
+      const f = Math.min(100, Math.max(0, parseInt(p[6], 10) || 0));
+
+      if (Date.now() < this.ignoreStaleUntilRealMs && f > CFG.MIN_FILL_TO_COUNT) {
+        return;
+      }
+      if (f <= CFG.MIN_FILL_TO_COUNT) {
+        this.ignoreStaleUntilRealMs = 0;
+      }
+
       this.dA = parseInt(p[4], 10);
       this.dB = parseInt(p[5], 10);
-      const f = Math.min(100, Math.max(0, parseInt(p[6], 10) || 0));
       this.setFill(f, t);
     } else if (k === 'E' && p.length >= 3) {
+      if (Date.now() < this.ignoreStaleUntilRealMs) return;
       this.onEvent(p, t);
     }
   }
 
   setFill(f, t) {
-    // 袋の交換を自動検知（ある程度たまっていたのにフタ閉状態でほぼ0になった）
-    if (this.fill >= 25 && f <= CFG.MIN_FILL_TO_COUNT && this.lid === 0) {
+    // 10%以上入っていた状態から急にほぼゼロ（5%以下）になったら、ごみを捨てた（袋を出した）と判断
+    if (this.fill >= 10 && f <= CFG.MIN_FILL_TO_COUNT) {
+      const prevFill = Math.round(this.fill);
       this.onBagOut(t, this.fill);
       commandQueue.push('C,RESET');
-      this.evToast('袋の交換を検知しました');
+      this.evToast(`ごみを捨てたと判断しました（使用率 ${prevFill}%）`);
+      return;
     }
     this.fill = f;
     this.addSample(t, f);
@@ -210,6 +220,8 @@ class Model {
     this.bagStart = t;
     this.bagOutSinceDeadline = true;
     this.fill = 0;
+    this.dA = this.emptyMm;
+    this.dB = this.emptyMm;
     this.addSample(t, 0);
   }
 
@@ -230,7 +242,6 @@ class Model {
   }
 
   update(t) {
-    // 1) 収集日の締切をまたいだら、その回を「出した／見送った」で数える
     let nd = nextDeadline(this.lastDeadline);
     while (nd <= t) {
       if (!this.bagOutSinceDeadline && this.fillAt(nd) >= CFG.MIN_FILL_TO_COUNT) {
@@ -242,7 +253,6 @@ class Model {
       nd = nextDeadline(nd);
     }
 
-    // 2) たまるペース [%/時]
     const ws = Math.max(this.bagStart, t - 72 * HOUR_MS);
     const spanH = (t - ws) / HOUR_MS;
     const f0 = (ws === this.bagStart) ? 0 : this.fillAt(ws);
@@ -263,7 +273,6 @@ class Model {
     }
     if (this.rate > 0) this.rate = Math.max(this.rate, 0.05);
 
-    // 3) 予測
     this.d1 = nextDeadline(t);
     this.d2 = nextDeadline(this.d1);
     if (this.rate > 0) {
@@ -279,7 +288,6 @@ class Model {
   }
 
   decide(t) {
-    const holdD2 = (this.d2 - this.bagStart) / DAY_MS;
     const w1 = dayWord(this.d1, t);
     const w2 = dayWord(this.d2, t);
     const today = w1 === '今日';
@@ -301,14 +309,10 @@ class Model {
       this.decision = D_OVERFLOW;
       this.headline = `${w1}より前に満杯になりそう`;
       this.sub = `満杯予測は ${whenText(this.tFull, t)}。ごみをならすか、小さくしてから捨てましょう。`;
-    } else if (this.fillAtD2 >= 100 || holdD2 > CFG.MAX_HOLD_DAYS) {
+    } else if (this.fillAtD2 >= 100) {
       this.decision = D_TAKE;
       this.headline = takeLine;
-      if (this.fillAtD2 < 100) {
-        this.sub = `${w2}まで待つと ${Math.round(holdD2)} 日ためることになるため（衛生のため ${Math.round(CFG.MAX_HOLD_DAYS)} 日まで）。`;
-      } else {
-        this.sub = `${w2}まで待つと、あふれる見込みです（約 ${Math.round(Math.min(this.fillAtD2, 199))}%）。`;
-      }
+      this.sub = `${w2}まで待つと、あふれる見込みです（約 ${Math.round(Math.min(this.fillAtD2, 199))}%）。`;
     } else {
       this.decision = D_SKIP;
       this.headline = today ? '今日は出さなくてOK' : `${w1}は見送りでOK`;
@@ -341,6 +345,10 @@ class Model {
   pctOf(d) {
     if (d < 0) return -1;
     return Math.min(100, Math.max(0, ((this.emptyMm - d) * 100.0) / Math.max(1, this.emptyMm - this.fullMm)));
+  }
+
+  distOf(pct) {
+    return Math.round(this.emptyMm - (pct / 100.0) * (this.emptyMm - this.fullMm));
   }
 
   saveState() {
@@ -377,33 +385,38 @@ class Model {
 
 // ================= アプリケーション状態と時計進行 =================
 let autoLid = true;
-let timeScale = 1;            // 1:実時間, 60:1秒=1分, 3600:1秒=1時間, 86400:1秒=1日
-let vNow = Date.now();        // 仮想現在時刻
+let timeScale = 1;
+let vNow = Date.now();
 let lastTickRealMs = Date.now();
 let lastSaveRealMs = Date.now();
+let simLidUntilRealMs = 0;
 let commandQueue = [];
 
 let model = new Model(vNow);
 model.loadState();
 
-// 250msごとに仮想時計を進める（実機データを受け取りつつ時間を早送りできる）
+function isDeviceAlive() {
+  return (Date.now() - model.lastRxRealMs) < 6000;
+}
+
 setInterval(() => {
   const nowReal = Date.now();
   const dt = nowReal - lastTickRealMs;
   lastTickRealMs = nowReal;
 
   if (timeScale <= 1) {
-    // 実時間モードのときは実時計に同期（ズレていたら戻す）
     if (Math.abs(vNow - nowReal) > 5000 && vNow <= nowReal) {
       vNow = nowReal;
     } else {
       vNow += dt;
     }
   } else {
-    // 早送り中：実時間経過 × 倍率 だけ仮想時計を進める
     vNow += dt * timeScale;
-    // 早送り中もグラフの水平線が途切れないようサンプルを記録
     model.addSample(vNow, model.fill);
+  }
+
+  if (!isDeviceAlive()) {
+    model.lid = nowReal < simLidUntilRealMs ? 2 : 0;
   }
 
   model.update(vNow);
@@ -415,44 +428,93 @@ setInterval(() => {
 }, 250);
 
 // ================= HTTP エンドポイント =================
-// 1. Arduino Uno R4 WiFi からのデータ受信（常に受け付ける）
 app.post('/api/line', (req, res) => {
   const line = (req.body || '').trim();
   if (line) {
-    // 現在の仮想時刻 vNow のタイムスタンプで実機データを記録
     model.handleLine(line, vNow);
   }
   const nextCmd = commandQueue.length > 0 ? commandQueue.shift() : 'OK';
   res.send(nextCmd);
 });
 
-// 2. Webブラウザからの操作（速度変更・実機コマンド・展示リセット）
 app.post('/api/action', (req, res) => {
   let payload = {};
   try { payload = JSON.parse(req.body); } catch (e) {}
   const { act, val } = payload;
+  const alive = isDeviceAlive();
 
   if (act === 'THROW') {
-    commandQueue.push('C,THROW');
-    model.pushToast('実機に投入コマンドを送信しました');
+    if (alive) {
+      commandQueue.push('C,THROW');
+      model.pushToast('実機に投入コマンドを送信しました');
+    } else {
+      if (model.fill >= 100) {
+        model.pushToast('すでに満杯（100%）です。「袋を出した (R)」で空にできます');
+      } else {
+        const beforeFill = model.fill;
+        const addPct = Math.floor(6 + Math.random() * 9);
+        const afterFill = Math.min(100, beforeFill + addPct);
+        const baseDist = model.distOf(afterFill);
+        const skew = Math.round(Math.random() * 22 - 11);
+
+        model.dA = Math.min(model.emptyMm, Math.max(model.fullMm, baseDist - skew));
+        model.dB = Math.min(model.emptyMm, Math.max(model.fullMm, baseDist + skew));
+        simLidUntilRealMs = Date.now() + 1500;
+        model.lid = 2;
+
+        model.setFill(afterFill, vNow);
+        model.onEvent(
+          ['E', String(Date.now()), 'THROW', String(model.distOf(beforeFill)), String(baseDist)],
+          vNow
+        );
+        if (afterFill >= 100 && beforeFill < 100) {
+          model.onEvent(['E', String(Date.now()), 'FULL', '100', '0'], vNow);
+        }
+      }
+    }
   } else if (act === 'RESET') {
-    commandQueue.push('C,RESET');
+    if (alive) {
+      commandQueue.push('C,RESET');
+      model.ignoreStaleUntilRealMs = Date.now() + 4000;
+    }
+    simLidUntilRealMs = 0;
+    model.lid = 0;
     model.onBagOut(vNow, model.fill);
     model.saveState();
-    model.pushToast('袋を出しました。記録を区切ります');
+    model.pushToast('袋を出しました（0%から再スタート）');
   } else if (act === 'OPEN') {
-    commandQueue.push('C,OPEN');
+    if (alive) {
+      commandQueue.push('C,OPEN');
+    } else {
+      simLidUntilRealMs = Date.now() + 2500;
+      model.lid = 2;
+      model.pushToast('フタを開けました（Web模擬）');
+    }
   } else if (act === 'CLOSE') {
-    commandQueue.push('C,CLOSE');
+    if (alive) {
+      commandQueue.push('C,CLOSE');
+    } else {
+      simLidUntilRealMs = 0;
+      model.lid = 0;
+      model.pushToast('フタを閉じました（Web模擬）');
+    }
   } else if (act === 'CAL_EMPTY') {
-    commandQueue.push('C,CAL,EMPTY');
-    model.pushToast('いまの距離を「空」の基準にしました');
+    if (alive) {
+      commandQueue.push('C,CAL,EMPTY');
+      model.pushToast('いまの距離を「空」の基準にしました');
+    } else {
+      model.pushToast('実機接続時のみ基準設定できます');
+    }
   } else if (act === 'CAL_FULL') {
-    commandQueue.push('C,CAL,FULL');
-    model.pushToast('いまの距離を「満杯」の基準にしました');
+    if (alive) {
+      commandQueue.push('C,CAL,FULL');
+      model.pushToast('いまの距離を「満杯」の基準にしました');
+    } else {
+      model.pushToast('実機接続時のみ基準設定できます');
+    }
   } else if (act === 'AUTO') {
     autoLid = !autoLid;
-    commandQueue.push(`C,AUTO,${autoLid ? 1 : 0}`);
+    if (alive) commandQueue.push(`C,AUTO,${autoLid ? 1 : 0}`);
     model.pushToast(autoLid ? '自動開閉 ON' : '自動開閉 OFF');
   } else if (act === 'SPEED') {
     const sc = [1, 60, 3600, 86400];
@@ -461,29 +523,23 @@ app.post('/api/action', (req, res) => {
     timeScale = sc[idx];
     model.pushToast(`時間の速さ：${nm[idx]}`);
   } else if (act === 'RESET_CLOCK') {
-    // 展示のやり直し用：時計を現在時刻に戻し、履歴・節約カウントを初期化
     timeScale = 1;
     vNow = Date.now();
+    if (alive) commandQueue.push('C,RESET');
     const keepEmpty = model.emptyMm;
     const keepFull = model.fullMm;
-    const keepFill = model.fill;
-    const keepDA = model.dA;
-    const keepDB = model.dB;
     model = new Model(vNow);
     model.emptyMm = keepEmpty;
     model.fullMm = keepFull;
-    model.fill = keepFill;
-    model.dA = keepDA;
-    model.dB = keepDB;
-    model.hist = [{ t: vNow, f: keepFill }];
+    if (alive) model.ignoreStaleUntilRealMs = Date.now() + 4000;
+    simLidUntilRealMs = 0;
     model.saveState();
-    model.pushToast('時計と記録を現在時刻にリセットしました');
+    model.pushToast('時計と記録を0からリセットしました');
   }
 
   res.json({ ok: true });
 });
 
-// 3. 画面描画用の全データ配信
 app.get('/api/state', (req, res) => {
   const nowReal = Date.now();
   const bagYen = CFG.BAG_LITERS * CFG.YEN_PER_LITER;
@@ -499,7 +555,7 @@ app.get('/api/state', (req, res) => {
     autoLid,
     timeScale,
     vNow,
-    alive: (nowReal - model.lastRxRealMs < 6000),
+    alive: isDeviceAlive(),
     errActive: (model.errCode > 0 && nowReal - model.errRealMs < 15000) ? model.errCode : 0,
     model: {
       emptyMm: model.emptyMm,
