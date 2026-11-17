@@ -9,7 +9,7 @@ const STATE_FILE = path.join(__dirname, 'state.json');
 app.use(express.text({ type: '*/*' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// =================== 設定（SmartBinUI と同じ） ===================
+// =================== 設定 ===================
 const CFG = {
   COLLECT_DAYS: [1, 4],        // 月=1, 火=2, 水=3, 木=4, 金=5, 土=6, 日=7
   DEADLINE_H: 8,
@@ -39,11 +39,9 @@ const D_OVERFLOW   = 5;
 const WD = ['月', '火', '水', '木', '金', '土', '日'];
 
 // ================= 日本時間（JST）ヘルパー =================
-function jstDate(ms) {
-  return new Date(ms + JST_OFFSET);
-}
+function jstDate(ms) { return new Date(ms + JST_OFFSET); }
 function getDow1to7(ms) {
-  const d = jstDate(ms).getUTCDay(); // 0(日)〜6(土)
+  const d = jstDate(ms).getUTCDay();
   return d === 0 ? 7 : d;
 }
 function dayKey(ms) {
@@ -85,7 +83,7 @@ function nextDeadline(after) {
   return after + 7 * DAY_MS;
 }
 
-// ================= Model クラス（Model.pde の移植） =================
+// ================= Model クラス =================
 class Model {
   constructor(start) {
     this.emptyMm = 300;
@@ -135,7 +133,8 @@ class Model {
   }
 
   evToast(text) {
-    if (demo && sim && (sim.preloading || timeScale > 60)) return;
+    // 高速早送り中はトーストが溜まりすぎないよう抑制
+    if (timeScale > 60) return;
     this.pushToast(text);
   }
 
@@ -165,9 +164,10 @@ class Model {
   }
 
   setFill(f, t) {
+    // 袋の交換を自動検知（ある程度たまっていたのにフタ閉状態でほぼ0になった）
     if (this.fill >= 25 && f <= CFG.MIN_FILL_TO_COUNT && this.lid === 0) {
       this.onBagOut(t, this.fill);
-      if (!demo) commandQueue.push('C,RESET');
+      commandQueue.push('C,RESET');
       this.evToast('袋の交換を検知しました');
     }
     this.fill = f;
@@ -230,6 +230,7 @@ class Model {
   }
 
   update(t) {
+    // 1) 収集日の締切をまたいだら、その回を「出した／見送った」で数える
     let nd = nextDeadline(this.lastDeadline);
     while (nd <= t) {
       if (!this.bagOutSinceDeadline && this.fillAt(nd) >= CFG.MIN_FILL_TO_COUNT) {
@@ -241,6 +242,7 @@ class Model {
       nd = nextDeadline(nd);
     }
 
+    // 2) たまるペース [%/時]
     const ws = Math.max(this.bagStart, t - 72 * HOUR_MS);
     const spanH = (t - ws) / HOUR_MS;
     const f0 = (ws === this.bagStart) ? 0 : this.fillAt(ws);
@@ -261,6 +263,7 @@ class Model {
     }
     if (this.rate > 0) this.rate = Math.max(this.rate, 0.05);
 
+    // 3) 予測
     this.d1 = nextDeadline(t);
     this.d2 = nextDeadline(this.d1);
     if (this.rate > 0) {
@@ -367,215 +370,171 @@ class Model {
         this.hist = j.hist;
         this.fill = this.hist[this.hist.length - 1].f;
       }
-      this.lastDeadline = Date.now();
+      this.lastDeadline = vNow;
     } catch (e) {}
   }
 }
 
-// ================= Sim クラス（Sim.pde の移植） =================
-class Sim {
-  constructor(start, m) {
-    this.t = start;
-    this.m = m;
-    this.f = 0;
-    this.skew = 0;
-    this.lidUntilRealMs = 0;
-    this.preloading = false;
-  }
-
-  advanceTo(target) {
-    this.preloading = (target - this.t) > 2 * DAY_MS;
-    let steps = 0;
-    while (this.t + MIN_MS <= target && steps < 400000) {
-      this.t += MIN_MS;
-      this.minute(this.t);
-      this.m.update(this.t);
-      steps++;
-    }
-    this.preloading = false;
-  }
-
-  minute(tt) {
-    const d = jstDate(tt);
-    const h = d.getUTCHours();
-    const min = d.getUTCMinutes();
-
-    let p = 0.0012;
-    if      (h >= 18 && h < 23) p = 0.007;
-    else if (h >= 7  && h < 9)  p = 0.004;
-    else if (h >= 11 && h < 14) p = 0.002;
-    else if (h >= 1  && h < 6)  p = 0.0001;
-
-    if (Math.random() < p) {
-      this.throwSome(tt, 2 + Math.random() * 3.5);
-    }
-
-    if (h === 7 && min === 40 && dayWord(this.m.d1, tt) === '今日' && this.m.isAction()) {
-      this.takeOut(tt);
-    }
-
-    this.skew = Math.min(22, Math.max(-22, this.skew + (Math.random() * 2.4 - 1.2)));
-    this.emitS(tt);
-  }
-
-  distOf(pct) {
-    return Math.round(this.m.emptyMm - (pct / 100.0) * (this.m.emptyMm - this.m.fullMm));
-  }
-
-  throwSome(tt, pct) {
-    if (this.f >= 100) return;
-    const before = this.f;
-    this.f = Math.min(100, this.f + pct);
-    const now = Date.now();
-    this.m.handleLine(`E,${now},LID_OPEN,0,0`, tt);
-    this.m.handleLine(`E,${now},THROW,${this.distOf(before)},${this.distOf(this.f)}`, tt);
-    this.m.handleLine(`E,${now},LID_CLOSE,0,0`, tt);
-    if (this.f >= 100) this.m.handleLine(`E,${now},FULL,100,0`, tt);
-  }
-
-  emitS(tt) {
-    const base = this.distOf(this.f);
-    const a = base - Math.round(this.skew);
-    const b = base + Math.round(this.skew);
-    const lidState = Date.now() < this.lidUntilRealMs ? 2 : 0;
-    this.m.handleLine(`S,${Date.now()},${lidState},-1,${a},${b},${Math.round(this.f)}`, tt);
-  }
-
-  manualThrow(tt) {
-    this.lidUntilRealMs = Date.now() + 1500;
-    this.throwSome(tt, 3 + Math.random() * 4);
-    this.emitS(tt);
-  }
-
-  takeOut(tt) {
-    this.m.onBagOut(tt, this.m.fill);
-    this.f = 0;
-    this.skew = 0;
-    this.emitS(tt);
-  }
-
-  lidPulse() {
-    this.lidUntilRealMs = Date.now() + 2000;
-  }
-}
-
-// ================= アプリケーション状態とループ =================
-let demo = false;
+// ================= アプリケーション状態と時計進行 =================
 let autoLid = true;
-let timeScale = 1;
-let vNow = Date.now();
+let timeScale = 1;            // 1:実時間, 60:1秒=1分, 3600:1秒=1時間, 86400:1秒=1日
+let vNow = Date.now();        // 仮想現在時刻
 let lastTickRealMs = Date.now();
 let lastSaveRealMs = Date.now();
 let commandQueue = [];
 
 let model = new Model(vNow);
 model.loadState();
-let sim = null;
 
-function startDemo() {
-  if (!demo && model) model.saveState();
-  demo = true;
-  timeScale = 1;
-  vNow = Date.now();
-  const start = vNow - 21 * DAY_MS;
-  model = new Model(start);
-  sim = new Sim(start, model);
-  model.handleLine('H,TRASHCAN,1.1,300,50', start);
-  sim.advanceTo(vNow); // 3週間分を一気に早送り生成
-  model.pushToast('デモモード：3週間分のデータを生成しました');
-}
-
-function startLive() {
-  demo = false;
-  timeScale = 1;
-  vNow = Date.now();
-  model = new Model(vNow);
-  model.loadState();
-  sim = null;
-  commandQueue.push('C,PING');
-  model.pushToast('実機モードに切り替えました');
-}
-
-// サーバー側ティック（250msごとに仮想時計とモデルを更新）
+// 250msごとに仮想時計を進める（実機データを受け取りつつ時間を早送りできる）
 setInterval(() => {
   const nowReal = Date.now();
   const dt = nowReal - lastTickRealMs;
   lastTickRealMs = nowReal;
 
-  if (demo && sim) {
-    vNow += dt * timeScale;
-    sim.advanceTo(vNow);
-    model.lid = nowReal < sim.lidUntilRealMs ? 2 : 0;
-  } else {
-    vNow = nowReal;
-    if (nowReal - lastSaveRealMs > 60000) {
-      model.saveState();
-      lastSaveRealMs = nowReal;
+  if (timeScale <= 1) {
+    // 実時間モードのときは実時計に同期（ズレていたら戻す）
+    if (Math.abs(vNow - nowReal) > 5000 && vNow <= nowReal) {
+      vNow = nowReal;
+    } else {
+      vNow += dt;
     }
+  } else {
+    // 早送り中：実時間経過 × 倍率 だけ仮想時計を進める
+    vNow += dt * timeScale;
+    // 早送り中もグラフの水平線が途切れないようサンプルを記録
+    model.addSample(vNow, model.fill);
   }
+
   model.update(vNow);
+
+  if (nowReal - lastSaveRealMs > 60000) {
+    model.saveState();
+    lastSaveRealMs = nowReal;
+  }
 }, 250);
 
 // ================= HTTP エンドポイント =================
-// 1. Arduino Uno R4 WiFi からの受信
+// 1. Arduino Uno R4 WiFi からのデータ受信（常に受け付ける）
 app.post('/api/line', (req, res) => {
   const line = (req.body || '').trim();
-  if (!demo && line) {
-    model.handleLine(line, Date.now());
+  if (line) {
+    // 現在の仮想時刻 vNow のタイムスタンプで実機データを記録
+    model.handleLine(line, vNow);
   }
-  const nextCmd = (!demo && commandQueue.length > 0) ? commandQueue.shift() : 'OK';
+  const nextCmd = commandQueue.length > 0 ? commandQueue.shift() : 'OK';
   res.send(nextCmd);
 });
 
-// 2. Webブラウザからの操作（キー操作 / ボタン操作）
+// 2. Webブラウザからの操作（速度変更・実機コマンド・展示リセット）
 app.post('/api/action', (req, res) => {
   let payload = {};
   try { payload = JSON.parse(req.body); } catch (e) {}
   const { act, val } = payload;
 
   if (act === 'THROW') {
-    if (demo && sim) sim.manualThrow(vNow);
-    else commandQueue.push('C,THROW');
+    commandQueue.push('C,THROW');
+    model.pushToast('実機に投入コマンドを送信しました');
   } else if (act === 'RESET') {
-    if (demo && sim) sim.takeOut(vNow);
-    else {
-      commandQueue.push('C,RESET');
-      model.onBagOut(vNow, model.fill);
-      model.saveState();
-    }
+    commandQueue.push('C,RESET');
+    model.onBagOut(vNow, model.fill);
+    model.saveState();
     model.pushToast('袋を出しました。記録を区切ります');
   } else if (act === 'OPEN') {
-    if (demo && sim) sim.lidPulse();
-    else commandQueue.push('C,OPEN');
+    commandQueue.push('C,OPEN');
   } else if (act === 'CLOSE') {
-    if (!demo) commandQueue.push('C,CLOSE');
-  } else if (act === 'CAL_EMPTY' && !demo) {
+    commandQueue.push('C,CLOSE');
+  } else if (act === 'CAL_EMPTY') {
     commandQueue.push('C,CAL,EMPTY');
     model.pushToast('いまの距離を「空」の基準にしました');
-  } else if (act === 'CAL_FULL' && !demo) {
+  } else if (act === 'CAL_FULL') {
     commandQueue.push('C,CAL,FULL');
     model.pushToast('いまの距離を「満杯」の基準にしました');
-  } else if (act === 'AUTO' && !demo) {
+  } else if (act === 'AUTO') {
     autoLid = !autoLid;
     commandQueue.push(`C,AUTO,${autoLid ? 1 : 0}`);
     model.pushToast(autoLid ? '自動開閉 ON' : '自動開閉 OFF');
   } else if (act === 'SPEED') {
-    if (!demo) {
-      model.pushToast('実機モードでは時間を早送りできません');
-    } else {
-      const sc = [1, 60, 3600, 86400];
-      const nm = ['実時間', '1秒 = 1分', '1秒 = 1時間', '1秒 = 1日'];
-      const idx = Math.min(3, Math.max(0, Number(val) || 0));
-      timeScale = sc[idx];
-      model.pushToast(`時間の速さ：${nm[idx]}`);
-    }
-  } else if (act === 'TOGGLE_MODE') {
-    if (demo) startLive();
-    else startDemo();
+    const sc = [1, 60, 3600, 86400];
+    const nm = ['実時間 (×1)', '1秒 = 1分 (×60)', '1秒 = 1時間 (×3600)', '1秒 = 1日 (×86400)'];
+    const idx = Math.min(3, Math.max(0, Number(val) || 0));
+    timeScale = sc[idx];
+    model.pushToast(`時間の速さ：${nm[idx]}`);
+  } else if (act === 'RESET_CLOCK') {
+    // 展示のやり直し用：時計を現在時刻に戻し、履歴・節約カウントを初期化
+    timeScale = 1;
+    vNow = Date.now();
+    const keepEmpty = model.emptyMm;
+    const keepFull = model.fullMm;
+    const keepFill = model.fill;
+    const keepDA = model.dA;
+    const keepDB = model.dB;
+    model = new Model(vNow);
+    model.emptyMm = keepEmpty;
+    model.fullMm = keepFull;
+    model.fill = keepFill;
+    model.dA = keepDA;
+    model.dB = keepDB;
+    model.hist = [{ t: vNow, f: keepFill }];
+    model.saveState();
+    model.pushToast('時計と記録を現在時刻にリセットしました');
   }
 
   res.json({ ok: true });
 });
 
 // 3. 画面描画用の全データ配信
-app.get('/api/
+app.get('/api/state', (req, res) => {
+  const nowReal = Date.now();
+  const bagYen = CFG.BAG_LITERS * CFG.YEN_PER_LITER;
+  const yenSaved = model.savedBags * bagYen;
+  const plasticG = model.savedBags * CFG.BAG_GRAMS;
+  const co2G = plasticG * CFG.CO2_PER_G_PE;
+  const avgUse = model.usedBags > 0 ? model.outFillSum / model.usedBags : -1;
+  const daysTracked = (vNow - model.startMs) / DAY_MS;
+  const annualBags = daysTracked >= 7 ? (model.savedBags / daysTracked) * 365 : -1;
+
+  res.json({
+    cfg: CFG,
+    autoLid,
+    timeScale,
+    vNow,
+    alive: (nowReal - model.lastRxRealMs < 6000),
+    errActive: (model.errCode > 0 && nowReal - model.errRealMs < 15000) ? model.errCode : 0,
+    model: {
+      emptyMm: model.emptyMm,
+      fullMm: model.fullMm,
+      fill: model.fill,
+      dA: model.dA,
+      dB: model.dB,
+      pctA: model.pctOf(model.dA),
+      pctB: model.pctOf(model.dB),
+      lid: model.lid,
+      rate: model.rate,
+      rateSrc: model.rateSrc,
+      d1: model.d1,
+      d2: model.d2,
+      tFull: model.tFull,
+      decision: model.decision,
+      isAction: model.isAction(),
+      targetPickup: model.targetPickup(),
+      headline: model.headline,
+      sub: model.sub,
+      savedBags: model.savedBags,
+      usedBags: model.usedBags,
+      bagYen,
+      yenSaved,
+      plasticG,
+      co2G,
+      avgUse,
+      daysTracked,
+      annualBags,
+      lastThrowT: model.lastThrowT,
+      lastThrowPct: model.lastThrowPct,
+      hist: model.hist,
+      toasts: model.toasts.filter(t => nowReal - t.at < 2800)
+    }
+  });
+});
+
+app.listen(PORT, () => console.log(`Smart Bin Server listening on port ${PORT}`));
