@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>捨て時を、教えてくれるゴミ箱</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  :root {
+    --bg: #16202B; --panel: #20303F; --line: #34485C;
+    --text: #FFFFFF; --sub: #9FB0C2; --acc: #E8A317; --grn: #3BA58B; --red: #E0604A;
+  }
+  body { background: var(--bg); color: var(--text); font-family: sans-serif; margin: 0; padding: 20px; }
+  header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+  h1 { color: var(--acc); font-size: 20px; margin: 0; }
+  .status { text-align: right; font-size: 13px; color: var(--sub); }
+  .grid { display: grid; grid-template-columns: 320px 1fr; gap: 16px; max-width: 1200px; margin: 0 auto; }
+  .grid-bottom { display: grid; grid-template-columns: 1fr 340px; gap: 16px; max-width: 1200px; margin: 16px auto 0; }
+  @media (max-width: 850px) { .grid, .grid-bottom { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border-radius: 10px; padding: 20px; }
+  .label { color: var(--sub); font-size: 13px; margin-bottom: 10px; }
+  .gauge-wrap { display: flex; align-items: center; gap: 20px; }
+  .bin { width: 110px; height: 210px; border: 2px solid var(--line); border-radius: 6px; display: flex; gap: 4px; padding: 4px; position: relative; box-sizing: border-box; }
+  .col { flex: 1; background: rgba(0,0,0,0.2); border-radius: 3px; display: flex; align-items: flex-end; overflow: hidden; }
+  .fill { width: 100%; transition: height 0.4s, background 0.4s; }
+  .full-line { position: absolute; left: -6px; right: -6px; bottom: 90%; border-top: 1px dashed var(--red); }
+  .pct-big { font-size: 48px; font-weight: bold; }
+  .sensor-info { font-size: 13px; color: var(--sub); line-height: 1.7; margin-top: 8px; }
+  .uneven { color: var(--acc); font-weight: bold; font-size: 13px; margin-top: 10px; }
+  .verdict-head { font-size: 28px; font-weight: bold; margin: 8px 0; }
+  .verdict-sub { font-size: 15px; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; border-top: 1px solid var(--line); font-size: 14px; }
+  td { padding: 7px 0; }
+  td:first-child { color: var(--sub); width: 130px; }
+  .btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  button { background: var(--line); color: var(--text); border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  button:hover { opacity: 0.85; }
+  button.primary { background: var(--acc); color: #16202B; font-weight: bold; }
+  .log-box { font-size: 11px; color: var(--sub); line-height: 1.6; margin-top: 12px; background: rgba(0,0,0,0.15); padding: 8px; border-radius: 6px; }
+</style>
+</head>
+<body>
+<header style="max-width:1200px;margin:0 auto 16px;">
+  <h1>捨て時を、教えてくれるゴミ箱 <span style="font-size:12px;color:var(--sub);">CLOUD</span></h1>
+  <div class="status">
+    <div id="connStatus">接続確認中...</div>
+    <div id="clockStr" style="color:var(--text);font-size:15px;"></div>
+  </div>
+</header>
+
+<div class="grid">
+  <div class="panel">
+    <div class="label">いまの充填率</div>
+    <div class="gauge-wrap">
+      <div class="bin">
+        <div class="full-line"></div>
+        <div class="col"><div id="fillA" class="fill"></div></div>
+        <div class="col"><div id="fillB" class="fill"></div></div>
+      </div>
+      <div>
+        <div><span id="pctVal" class="pct-big">0</span> %</div>
+        <div class="sensor-info" id="sensorInfo"></div>
+      </div>
+    </div>
+    <div id="unevenWarn" class="uneven"></div>
+    <div class="btns">
+      <button class="primary" onclick="sendCmd('C,RESET')">袋を交換(0%)</button>
+      <button onclick="sendCmd('C,OPEN')">フタ開</button>
+      <button onclick="sendCmd('C,CLOSE')">フタ閉</button>
+      <button onclick="sendCmd('SIM_THROW')">テスト投入</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="label">判定</div>
+    <div id="vHead" class="verdict-head">読み込み中...</div>
+    <div id="vSub" class="verdict-sub"></div>
+    <table>
+      <tr><td>次の収集</td><td id="rC1">—</td></tr>
+      <tr><td>その次</td><td id="rC2">—</td></tr>
+      <tr><td>投入ペース</td><td id="rRate">—</td></tr>
+      <tr><td>満杯の予測</td><td id="rFull">—</td></tr>
+      <tr><td>次の収集時点</td><td id="rPctC1">—</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="grid-bottom">
+  <div class="panel">
+    <div class="label">充填率の推移（過去7日）</div>
+    <canvas id="chart" height="100"></canvas>
+  </div>
+  <div class="panel">
+    <div class="label">袋の使い方の比較</div>
+    <div style="font-size:13px;line-height:1.8;">
+      <div>推奨に従う：<b id="sSmart">0枚 / ロス 0円</b></div>
+      <div style="color:var(--sub);">毎回出す ：<span id="sNaive">0枚 / ロス 0円</span></div>
+      <div id="sSaved" style="font-size:18px;font-weight:bold;color:var(--acc);margin-top:4px;">節約 0 円</div>
+    </div>
+    <div class="log-box" id="logBox"></div>
+  </div>
+</div>
+
+<script>
+const WEEK = ['日','月','火','水','木','金','土'];
+function fmtDay(ms) {
+  const d = new Date(ms);
+  return `${d.getMonth()+1}/${d.getDate()}(${WEEK[d.getDay()]})`;
+}
+function fmtDT(ms) {
+  const d = new Date(ms);
+  return `${fmtDay(ms)} ${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+function colColor(pct) { return pct >= 90 ? 'var(--red)' : (pct >= 60 ? 'var(--acc)' : 'var(--grn)'); }
+
+const ctx = document.getElementById('chart').getContext('2d');
+const chart = new Chart(ctx, {
+  type: 'line',
+  data: { datasets: [{ label: '充填率(%)', data: [], borderColor: '#3BA58B', stepped: true, fill: false, pointRadius: 2 }] },
+  options: {
+    animation: false,
+    scales: {
+      x: { type: 'linear', ticks: { color: '#9FB0C2', callback: v => fmtDay(v) }, grid: { color: '#34485C' } },
+      y: { min: 0, max: 100, ticks: { color: '#9FB0C2' }, grid: { color: '#34485C' } }
+    },
+    plugins: { legend: { display: false } }
+  }
+});
+
+async function sendCmd(cmd) {
+  await fetch('/api/cmd', { method: 'POST', body: cmd });
+  refresh();
+}
+
+async function refresh() {
+  const res = await fetch('/api/status');
+  const data = await res.json();
+  const { now, state, dec, stats, history, logs } = data;
+
+  const alive = (now - state.lastRx) < 10000;
+  document.getElementById('connStatus').textContent = alive ? `ONLINE (v${state.deviceVersion})` : 'OFFLINE（受信待ち）';
+  document.getElementById('clockStr').textContent = fmtDT(now);
+
+  // ゲージ
+  document.getElementById('pctVal').textContent = Math.round(state.curPct);
+  const pctOf = mm => Math.min(100, Math.max(0, (state.emptyMM - mm) * 100 / Math.max(1, state.emptyMM - state.fullMM)));
+  const split = state.fillAMM >= 0 && state.fillBMM >= 0;
+  const pA = split ? pctOf(state.fillAMM) : state.curPct;
+  const pB = split ? pctOf(state.fillBMM) : state.curPct;
+
+  const elA = document.getElementById('fillA');
+  const elB = document.getElementById('fillB');
+  elA.style.height = pA + '%'; elA.style.background = colColor(pA);
+  elB.style.height = pB + '%'; elB.style.background = colColor(pB);
+
+  const lids = ['閉', '開いています', '開', '閉じています'];
+  document.getElementById('sensorInfo').innerHTML =
+    `フタ：${lids[state.lidState] || '閉'}<br>` +
+    `手 ：${state.handMM < 0 ? '—' : state.handMM + ' mm'}<br>` +
+    `内側A：${state.fillAMM < 0 ? '—' : state.fillAMM + ' mm'}<br>` +
+    `内側B：${state.fillBMM < 0 ? '—' : state.fillBMM + ' mm'}`;
+
+  document.getElementById('unevenWarn').textContent =
+    (split && state.lidState === 0 && Math.abs(state.fillAMM - state.fillBMM) >= 60)
+      ? '片寄りあり：ならせば、まだ入ります' : '';
+
+  // 判定
+  const vh = document.getElementById('vHead'), vs = document.getElementById('vSub');
+  if (dec.verdict === 0) {
+    vh.style.color = 'var(--sub)'; vh.textContent = 'データを集めています';
+    vs.textContent = '予測には半日分以上の記録が必要です';
+  } else if (dec.verdict === 1) {
+    vh.style.color = 'var(--grn)'; vh.textContent = `${fmtDay(dec.c1)}の収集は見送りOK`;
+    vs.textContent = `このまま出すと、袋の約${Math.round(100 - dec.pctAtC1)}%（約${Math.round(dec.lossYen)}円分）が空のまま`;
+  } else if (dec.verdict === 2) {
+    vh.style.color = 'var(--acc)'; vh.textContent = `${fmtDay(dec.c1)}の収集日に出しましょう`;
+    vs.textContent = `見送ると、次の${fmtDay(dec.c2)}までに満杯になります`;
+  } else {
+    vh.style.color = 'var(--red)'; vh.textContent = '次の収集日まで持ちません';
+    vs.textContent = `${fmtDT(dec.fullAt)}ごろ満杯の見込み。袋の口に余裕を残して`;
+  }
+
+  document.getElementById('rC1').textContent = fmtDT(dec.c1);
+  document.getElementById('rC2').textContent = fmtDT(dec.c2);
+  document.getElementById('rRate').textContent = dec.verdict === 0 ? '—' : `${dec.ratePerDay.toFixed(1)} % / 日`;
+  document.getElementById('rFull').textContent = dec.verdict === 0 ? '—' : fmtDT(dec.fullAt);
+  document.getElementById('rPctC1').textContent = dec.verdict === 0 ? '—' : `約 ${Math.round(dec.pctAtC1)} %`;
+
+  // 比較・ログ
+  document.getElementById('sSmart').textContent = `${stats.smartBags} 枚 ／ ロス ${Math.round(stats.smartWaste)} 円`;
+  document.getElementById('sNaive').textContent = `${stats.naiveBags} 枚 ／ ロス ${Math.round(stats.naiveWaste)} 円`;
+  const saved = stats.naiveWaste - stats.smartWaste;
+  document.getElementById('sSaved').textContent = `${saved >= 0 ? '節約 ' : '差 '}${Math.round(saved)} 円`;
+  document.getElementById('logBox').innerHTML = logs.join('<br>');
+
+  // グラフ更新
+  chart.data.datasets[0].data = history.map(r => ({ x: r.t, y: r.pct }));
+  chart.update();
+}
+
+setInterval(refresh, 2000);
+refresh();
+</script>
+</body>
+</html>
