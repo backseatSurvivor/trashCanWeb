@@ -1,51 +1,468 @@
-const express = require('express');
-const fs = require('fs');
-const path = require('path');
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart Bin / Sapporo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@200;300;700&family=Noto+Sans+JP:wght@300;400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg0: #262E66;
+    --bg1: #5868D9;
+    --bg2: #95A1F1;
+    --bg3: #E6D5E8;
+    --ink: #205182;
+    --accent: #D6589A;
+    --accent-lt: #F4B3D3;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    min-height: 100vh;
+    font-family: 'Noto Sans JP', sans-serif;
+    color: #fff;
+    /* Theme.pde の背景グラデーションと光の再現 */
+    background:
+      radial-gradient(circle at 10% 105%, rgba(243, 205, 228, 0.55) 0%, transparent 45%),
+      radial-gradient(circle at 100% 5%, rgba(120, 135, 245, 0.35) 0%, transparent 40%),
+      radial-gradient(circle at 0% 0%, rgba(25, 30, 75, 0.5) 0%, transparent 35%),
+      linear-gradient(180deg, var(--bg0) 0%, var(--bg1) 45%, var(--bg2) 75%, var(--bg3) 100%);
+    display: flex;
+    justify-content: center;
+    padding: 20px;
+  }
+  .container {
+    width: 100%;
+    max-width: 1240px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
 
-const app = express();
-const PORT = process.env.PORT || 3000;
-const STATE_FILE = path.join(__dirname, 'state.json');
+  /* 字間を空けた英字ラベル */
+  .cap {
+    font-family: 'Inter', sans-serif;
+    font-weight: 700;
+    font-size: 10.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
 
-app.use(express.text({ type: '*/*' }));
-app.use(express.static(path.join(__dirname, 'public')));
+  /* ヘッダー */
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .header-right {
+    display: flex;
+    align-items: baseline;
+    gap: 24px;
+  }
+  .mode-link {
+    border-bottom: 1px solid rgba(255,255,255,0.6);
+    padding-bottom: 3px;
+    cursor: pointer;
+    opacity: 0.9;
+  }
+  .mode-link:hover { opacity: 1; }
+  .err-badge {
+    background: var(--accent);
+    padding: 3px 10px;
+    color: #fff;
+  }
+  .clock {
+    font-size: 14px;
+    font-weight: 400;
+  }
 
-// =================== 設定（SmartBinUI と同じ） ===================
-const CFG = {
-  COLLECT_DAYS: [1, 4],        // 月=1, 火=2, 水=3, 木=4, 金=5, 土=6, 日=7
-  DEADLINE_H: 8,
-  DEADLINE_M: 30,
-  BAG_LITERS: 20,              // 20L袋
-  YEN_PER_LITER: 2,            // 1Lあたり2円（20L=40円）
-  BAG_GRAMS: 14.0,             // 袋1枚の重さ [g]
-  CO2_PER_G_PE: 3.14,          // PE 1g 焼却時の CO2 [g]
-  CEDAR_KG_PER_YEAR: 8.8,      // スギ1本の年間CO2吸収量 [kg]
-  SAPPORO_HOUSEHOLDS: 1005912, // 札幌市の世帯数
-  MAX_HOLD_DAYS: 8,            // 衛生上の最長保管日数
-  MIN_FILL_TO_COUNT: 5         // ごみなしとみなす閾値 [%]
-};
+  /* 上段レイアウト（Hero + Fill level） */
+  .top-row {
+    display: grid;
+    grid-template-columns: 1fr 460px;
+    gap: 32px;
+    align-items: stretch;
+  }
+  @media (max-width: 980px) {
+    .top-row { grid-template-columns: 1fr; }
+  }
 
-const MIN_MS = 60000;
-const HOUR_MS = 3600000;
+  /* Hero（今日の判断） */
+  .hero {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding-top: 6px;
+  }
+  .hero-headline {
+    font-weight: 300;
+    font-size: clamp(32px, 4.4vw, 56px);
+    line-height: 1.2;
+    margin: 12px 0 16px -2px;
+  }
+  .hero-bar {
+    width: 72px;
+    height: 2px;
+    background: rgba(255,255,255,0.6);
+    margin-bottom: 16px;
+  }
+  .hero-bar.action {
+    height: 4px;
+    background: var(--accent-lt);
+  }
+  .hero-sub {
+    font-size: 16.5px;
+    line-height: 1.6;
+    color: rgba(255,255,255,0.92);
+    min-height: 52px;
+    margin-bottom: 20px;
+  }
+  .agenda {
+    border-top: 1px solid rgba(255,255,255,0.45);
+    padding-top: 16px;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+  @media (max-width: 600px) {
+    .agenda { grid-template-columns: 1fr; }
+  }
+  .agenda-head {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .agenda-num { opacity: 0.6; }
+  .agenda-val { font-size: 17px; }
+
+  /* 角の立った半透明パネル（Theme.pde の card） */
+  .card {
+    background: linear-gradient(180deg, rgba(200, 209, 252, 0.93) 0%, rgba(248, 241, 247, 0.93) 100%);
+    border-top: 1px solid rgba(255, 255, 255, 0.78);
+    color: var(--ink);
+    padding: 20px 24px 16px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 12px;
+  }
+
+  /* 充填率カード */
+  .fill-body {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    margin: 4px 0 14px;
+  }
+  .fill-num-wrap {
+    font-family: 'Inter', sans-serif;
+    font-weight: 200;
+    line-height: 1;
+    margin-left: -4px;
+  }
+  .fill-num { font-size: 112px; letter-spacing: -0.03em; }
+  .fill-pct { font-size: 46px; margin-left: 4px; }
+  .bars {
+    display: flex;
+    gap: 14px;
+  }
+  .bar-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  .bar-track {
+    width: 38px;
+    height: 140px;
+    background: rgba(32, 81, 130, 0.11);
+    display: flex;
+    align-items: flex-end;
+  }
+  .bar-fill {
+    width: 100%;
+    background: rgba(32, 81, 130, 0.78);
+    transition: height 0.25s ease-out;
+  }
+  .bar-fill.main { background: var(--ink); }
+  .bar-lbl { font-size: 11px; opacity: 0.72; }
+  .fill-foot { font-size: 13px; line-height: 1.65; }
+  .fill-foot .sub { opacity: 0.62; }
+
+  /* 下段3枚カード */
+  .bottom-row {
+    display: grid;
+    grid-template-columns: 600px 1fr 1fr;
+    gap: 20px;
+  }
+  @media (max-width: 1080px) {
+    .bottom-row { grid-template-columns: 1fr; }
+  }
+
+  /* 推移グラフ */
+  #histCanvas {
+    width: 100%;
+    height: 210px;
+    display: block;
+  }
+  .card-note {
+    font-size: 11px;
+    opacity: 0.62;
+    margin-top: 6px;
+  }
+
+  /* 節約・環境カード */
+  .big-stat {
+    font-family: 'Inter', sans-serif;
+    font-weight: 200;
+    font-size: 64px;
+    line-height: 1.05;
+    margin: 4px 0 6px -2px;
+  }
+  .big-unit {
+    font-family: 'Noto Sans JP', sans-serif;
+    font-weight: 400;
+    font-size: 16px;
+    margin-left: 6px;
+  }
+  .mid-stat { font-size: 15px; margin-bottom: 14px; }
+  .divider {
+    border-top: 1px solid rgba(32, 81, 130, 0.25);
+    padding-top: 14px;
+    flex: 1;
+  }
+  .kv-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    margin-bottom: 10px;
+  }
+  .kv-row span:first-child { opacity: 0.75; }
+  .eco-sub-title { font-size: 11.5px; opacity: 0.72; margin-bottom: 8px; }
+  .eco-big { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
+  .eco-line { font-size: 13px; margin-bottom: 4px; }
+
+  /* フッター＆展示用コントロールバー */
+  footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    color: var(--ink);
+    font-size: 11.5px;
+  }
+  .ctrl-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+  button.ctrl {
+    background: rgba(255, 255, 255, 0.65);
+    border: 1px solid rgba(32, 81, 130, 0.25);
+    color: var(--ink);
+    padding: 5px 10px;
+    font-size: 11.5px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  button.ctrl:hover { background: rgba(255, 255, 255, 0.95); }
+  button.ctrl.active {
+    background: var(--ink);
+    color: #fff;
+    border-color: var(--ink);
+  }
+  button.ctrl.accent {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+    font-weight: 700;
+  }
+
+  /* トースト通知 */
+  .toast-wrap {
+    position: fixed;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    z-index: 100;
+    pointer-events: none;
+  }
+  .toast {
+    background: rgba(255, 255, 255, 0.96);
+    color: var(--ink);
+    padding: 8px 22px;
+    font-size: 14px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    animation: fadeIn 0.2s ease-out;
+  }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+</head>
+<body>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<div class="container">
+  <header>
+    <div class="cap" style="opacity:0.92;">Smart Bin &nbsp;/&nbsp; Sapporo</div>
+    <div class="header-right">
+      <div id="errBadge" class="cap err-badge" style="display:none;"></div>
+      <div id="modeBadge" class="cap mode-link" onclick="sendAct('TOGGLE_MODE')" title="クリックでデモ/実機を切替">LIVE</div>
+      <div id="clockText" class="clock">--/--（-） --:--</div>
+    </div>
+  </header>
+
+  <div class="top-row">
+    <!-- 今日の判断 -->
+    <section class="hero">
+      <div>
+        <div class="cap" style="opacity:0.75;">Today's call</div>
+        <h1 id="headline" class="hero-headline">読み込み中...</h1>
+        <div id="heroBar" class="hero-bar"></div>
+        <p id="subline" class="hero-sub"></p>
+      </div>
+      <div class="agenda">
+        <div>
+          <div class="agenda-head"><span class="cap agenda-num">01</span><span class="cap">Next pickup</span></div>
+          <div id="agNext" class="agenda-val">—</div>
+        </div>
+        <div>
+          <div class="agenda-head"><span class="cap agenda-num">02</span><span class="cap">Full by</span></div>
+          <div id="agFull" class="agenda-val">—</div>
+        </div>
+        <div>
+          <div class="agenda-head"><span class="cap agenda-num">03</span><span class="cap">Pace</span></div>
+          <div id="agPace" class="agenda-val">—</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 充填率 -->
+    <section class="card">
+      <div class="card-head">
+        <span class="cap">Fill level</span>
+        <span id="lidText" class="cap" style="opacity:0.6;">Lid closed</span>
+      </div>
+      <div class="fill-body">
+        <div class="fill-num-wrap">
+          <span id="fillNum" class="fill-num">0</span><span class="fill-pct">%</span>
+        </div>
+        <div class="bars">
+          <div class="bar-col">
+            <div class="bar-track"><div id="barA" class="bar-fill" style="height:0%"></div></div>
+            <div class="bar-lbl">A 手前</div>
+          </div>
+          <div class="bar-col">
+            <div class="bar-track"><div id="barAvg" class="bar-fill main" style="height:0%"></div></div>
+            <div class="bar-lbl">平均</div>
+          </div>
+          <div class="bar-col">
+            <div class="bar-track"><div id="barB" class="bar-fill" style="height:0%"></div></div>
+            <div class="bar-lbl">B 奥</div>
+          </div>
+        </div>
+      </div>
+      <div class="fill-foot">
+        <div id="skewText">内側センサの値を待っています</div>
+        <div id="lastThrowText" class="sub">投入はまだありません</div>
+      </div>
+    </section>
+  </div>
+
+  <div class="bottom-row">
+    <!-- 推移と予測 -->
+    <section class="card">
+      <div class="card-head">
+        <span class="cap">Fill history</span>
+        <span class="cap" style="opacity:0.6;">Past 4 days &nbsp;+&nbsp; forecast</span>
+      </div>
+      <canvas id="histCanvas" width="552" height="210"></canvas>
+      <div id="rateSrcText" class="card-note">予測の根拠：データを集めています</div>
+    </section>
+
+    <!-- 節約 -->
+    <section class="card">
+      <div class="card-head">
+        <span class="cap">Money saved</span>
+      </div>
+      <div>
+        <div id="yenBig" class="big-stat">¥0</div>
+        <div id="savedBagsText" class="mid-stat">指定袋 0 枚ぶん</div>
+      </div>
+      <div class="divider">
+        <div class="kv-row"><span>毎回出していたら</span><b id="naiveBagsVal">0 枚</b></div>
+        <div class="kv-row"><span>実際に使った袋</span><b id="usedBagsVal">0 枚</b></div>
+        <div class="kv-row"><span>袋の平均使用率</span><b id="avgUseVal">—</b></div>
+      </div>
+      <div id="moneyNote" class="card-note">札幌市指定袋 20L・1枚 40円で計算</div>
+    </section>
+
+    <!-- 環境への効果 -->
+    <section class="card">
+      <div class="card-head">
+        <span class="cap">Eco impact</span>
+      </div>
+      <div>
+        <div class="big-stat"><span id="co2Big">0</span><span id="co2Unit" class="big-unit">g CO2</span></div>
+        <div id="plasticText" class="mid-stat">プラスチック 0 g を削減</div>
+      </div>
+      <div class="divider">
+        <div class="eco-sub-title">札幌の全世帯がこのペースなら（1年・試算）</div>
+        <div id="sapporoEcoArea">
+          <div style="font-size:13px;opacity:0.75;">7日分のデータがたまると試算します</div>
+        </div>
+      </div>
+      <div id="ecoNote" class="card-note">袋1枚 14g を焼却した場合の試算</div>
+    </section>
+  </div>
+
+  <footer>
+    <div class="ctrl-group">
+      <button class="ctrl accent" onclick="sendAct('TOGGLE_MODE')" id="btnMode">デモへ切替 (D)</button>
+      <button class="ctrl" onclick="sendAct('THROW')">投入 (T)</button>
+      <button class="ctrl" onclick="sendAct('RESET')">袋を出した (R)</button>
+      <button class="ctrl" onclick="sendAct('OPEN')">フタ開 (O)</button>
+      <button class="ctrl" onclick="sendAct('CLOSE')" id="btnClose">フタ閉 (C)</button>
+      <span id="speedGroup" style="display:none; gap:4px; align-items:center; margin-left:6px;">
+        <span style="opacity:0.75;">速度:</span>
+        <button class="ctrl" id="sp0" onclick="sendAct('SPEED', 0)">×1 (1)</button>
+        <button class="ctrl" id="sp1" onclick="sendAct('SPEED', 1)">×60 (2)</button>
+        <button class="ctrl" id="sp2" onclick="sendAct('SPEED', 2)">×3600 (3)</button>
+        <button class="ctrl" id="sp3" onclick="sendAct('SPEED', 3)">×86400 (4)</button>
+      </span>
+      <span id="liveGroup" style="display:flex; gap:4px; align-items:center; margin-left:6px;">
+        <button class="ctrl" onclick="sendAct('CAL_EMPTY')">空基準 (E)</button>
+        <button class="ctrl" onclick="sendAct('CAL_FULL')">満杯基準 (F)</button>
+        <button class="ctrl" onclick="sendAct('AUTO')" id="btnAuto">自動開閉: ON (A)</button>
+      </span>
+    </div>
+    <div id="trackedText" style="opacity:0.75;">記録 0.0 日</div>
+  </footer>
+</div>
+
+<script>
 const DAY_MS = 86400000;
+const HOUR_MS = 3600000;
 const JST_OFFSET = 9 * HOUR_MS;
-
-const D_COLLECTING = 0;
-const D_EMPTY      = 1;
-const D_SKIP       = 2;
-const D_TAKE       = 3;
-const D_FULL       = 4;
-const D_OVERFLOW   = 5;
-
 const WD = ['月', '火', '水', '木', '金', '土', '日'];
+const INK = '#205182';
+const ACCENT = '#D6589A';
 
-// ================= 日本時間（JST）ヘルパー =================
-function jstDate(ms) {
-  return new Date(ms + JST_OFFSET);
-}
-function getDow1to7(ms) {
-  const d = jstDate(ms).getUTCDay(); // 0(日)〜6(土)
-  return d === 0 ? 7 : d;
-}
+function jstDate(ms) { return new Date(ms + JST_OFFSET); }
+function getDow1to7(ms) { const d = jstDate(ms).getUTCDay(); return d === 0 ? 7 : d; }
 function dayKey(ms) {
   const d = jstDate(ms);
   return Math.floor(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / DAY_MS);
@@ -58,578 +475,356 @@ function hm(ms) {
   const d = jstDate(ms);
   return `${d.getUTCHours()}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
 }
-function dayWord(ms, now) {
-  const diff = dayKey(ms) - dayKey(now);
-  if (diff === 0) return '今日';
-  if (diff === 1) return '明日';
-  if (diff > 1 && diff < 7) return `${WD[getDow1to7(ms) - 1]}曜`;
-  return md(ms);
-}
 function whenText(ms, now) {
   if (ms - now > 14 * DAY_MS) return '2週間以上先';
-  const dw = dayWord(ms, now);
-  const w = (dw === '今日' || dw === '明日') ? `${dw} ` : md(ms);
+  const diff = dayKey(ms) - dayKey(now);
+  let w = md(ms);
+  if (diff === 0) w = '今日 ';
+  else if (diff === 1) w = '明日 ';
   return `${w}${jstDate(ms).getUTCHours()}時ごろ`;
 }
-function isCollectDay(dow) {
-  return CFG.COLLECT_DAYS.includes(dow);
+function jpNum(v) {
+  if (v >= 1e8) return (v / 1e8).toFixed(1) + '億';
+  if (v >= 1e4) return Math.round(v / 1e4).toLocaleString() + '万';
+  if (v >= 100) return Math.round(v).toLocaleString();
+  return v.toFixed(1);
 }
-function nextDeadline(after) {
+function nextDeadlineClient(after, cfg) {
   const d = jstDate(after);
   for (let i = 0; i < 15; i++) {
-    const candidate = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + i, CFG.DEADLINE_H, CFG.DEADLINE_M, 0, 0));
-    const ms = candidate.getTime() - JST_OFFSET;
-    const dow = getDow1to7(ms);
-    if (isCollectDay(dow) && ms > after) return ms;
+    const c = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + i, cfg.DEADLINE_H, cfg.DEADLINE_M, 0, 0));
+    const ms = c.getTime() - JST_OFFSET;
+    if (cfg.COLLECT_DAYS.includes(getDow1to7(ms)) && ms > after) return ms;
   }
   return after + 7 * DAY_MS;
 }
 
-// ================= Model クラス（Model.pde の移植） =================
-class Model {
-  constructor(start) {
-    this.emptyMm = 300;
-    this.fullMm = 50;
-    this.fill = 0;
-    this.dA = -1;
-    this.dB = -1;
-    this.dHand = -1;
-    this.lid = 0;
-    this.hello = false;
-    this.lastRxRealMs = -100000;
-    this.errCode = 0;
-    this.errRealMs = -100000;
+// アニメーション用補間値
+let dispFill = 0, dispA = 0, dispB = 0, dispYen = 0, dispCo2 = 0;
+let latestData = null;
 
-    this.hist = [{ t: start, f: 0 }];
-    this.log = [];
-    this.toasts = [];
-    this.toastSeq = 0;
-
-    this.startMs = start;
-    this.bagStart = start;
-    this.lastDeadline = start;
-    this.bagOutSinceDeadline = false;
-    this.savedBags = 0;
-    this.usedBags = 0;
-    this.outFillSum = 0;
-    this.prevBagRate = -1;
-    this.lastThrowT = -1;
-    this.lastThrowPct = 0;
-
-    this.rate = -1;
-    this.rateSrc = '';
-    this.d1 = nextDeadline(start);
-    this.d2 = nextDeadline(this.d1);
-    this.fillAtD1 = -1;
-    this.fillAtD2 = -1;
-    this.tFull = -1;
-    this.decision = D_COLLECTING;
-    this.headline = '';
-    this.sub = '';
-  }
-
-  pushToast(text) {
-    this.toastSeq++;
-    this.toasts.push({ id: this.toastSeq, text, at: Date.now() });
-    if (this.toasts.length > 5) this.toasts.shift();
-  }
-
-  evToast(text) {
-    if (demo && sim && (sim.preloading || timeScale > 60)) return;
-    this.pushToast(text);
-  }
-
-  handleLine(line, t) {
-    if (!line) return;
-    line = line.trim();
-    if (!line) return;
-    const p = line.split(',');
-    this.lastRxRealMs = Date.now();
-    const k = p[0];
-
-    if (k === 'H' && p.length >= 5) {
-      this.emptyMm = parseInt(p[3], 10) || 300;
-      this.fullMm = parseInt(p[4], 10) || 50;
-      if (this.emptyMm <= this.fullMm) { this.emptyMm = 300; this.fullMm = 50; }
-      this.hello = true;
-    } else if (k === 'S' && p.length >= 7) {
-      this.lid = parseInt(p[2], 10) || 0;
-      this.dHand = parseInt(p[3], 10);
-      this.dA = parseInt(p[4], 10);
-      this.dB = parseInt(p[5], 10);
-      const f = Math.min(100, Math.max(0, parseInt(p[6], 10) || 0));
-      this.setFill(f, t);
-    } else if (k === 'E' && p.length >= 3) {
-      this.onEvent(p, t);
-    }
-  }
-
-  setFill(f, t) {
-    if (this.fill >= 25 && f <= CFG.MIN_FILL_TO_COUNT && this.lid === 0) {
-      this.onBagOut(t, this.fill);
-      if (!demo) commandQueue.push('C,RESET');
-      this.evToast('袋の交換を検知しました');
-    }
-    this.fill = f;
-    this.addSample(t, f);
-  }
-
-  onEvent(p, t) {
-    const kind = p[2];
-    const v1 = p.length > 3 ? (parseInt(p[3], 10) || 0) : 0;
-    const v2 = p.length > 4 ? (parseInt(p[4], 10) || 0) : 0;
-    if (kind === 'THROW') {
-      const d = ((v1 - v2) * 100.0) / Math.max(1, this.emptyMm - this.fullMm);
-      this.lastThrowT = t;
-      this.lastThrowPct = d;
-      this.addLog(t, `投入 +${Math.round(d)}%`);
-      this.evToast(`ごみを検知しました  +${Math.round(d)}%`);
-    } else if (kind === 'FULL') {
-      this.addLog(t, '満杯');
-      this.evToast('満杯になりました');
-    } else if (kind === 'ERR') {
-      this.errCode = v1;
-      this.errRealMs = Date.now();
-      const errMap = {
-        1: '内側センサ A が測れていません',
-        2: '内側センサ B が測れていません',
-        3: '外側センサ（手の検知）が測れていません'
-      };
-      this.evToast(errMap[v1] || `センサの異常（${v1}）`);
-    }
-  }
-
-  onBagOut(t, f) {
-    if (f >= CFG.MIN_FILL_TO_COUNT) {
-      this.usedBags++;
-      this.outFillSum += f;
-      const hrs = (t - this.bagStart) / HOUR_MS;
-      if (hrs > 12 && f > 20) this.prevBagRate = f / hrs;
-      this.addLog(t, `袋を出した（使用率 ${Math.round(f)}%）`);
-    }
-    this.bagStart = t;
-    this.bagOutSinceDeadline = true;
-    this.fill = 0;
-    this.addSample(t, 0);
-  }
-
-  addSample(t, f) {
-    const last = this.hist[this.hist.length - 1];
-    if (t < last.t) t = last.t;
-    if (Math.abs(f - last.f) >= 1 || t - last.t >= 30 * MIN_MS) {
-      this.hist.push({ t, f });
-    }
-    while (this.hist.length > 1 && this.hist[0].t < t - 15 * DAY_MS) {
-      this.hist.shift();
-    }
-  }
-
-  addLog(t, text) {
-    this.log.push({ t, text });
-    if (this.log.length > 200) this.log.shift();
-  }
-
-  update(t) {
-    let nd = nextDeadline(this.lastDeadline);
-    while (nd <= t) {
-      if (!this.bagOutSinceDeadline && this.fillAt(nd) >= CFG.MIN_FILL_TO_COUNT) {
-        this.savedBags++;
-        this.addLog(nd, '収集日を見送り → 袋1枚節約');
-      }
-      this.bagOutSinceDeadline = false;
-      this.lastDeadline = nd;
-      nd = nextDeadline(nd);
-    }
-
-    const ws = Math.max(this.bagStart, t - 72 * HOUR_MS);
-    const spanH = (t - ws) / HOUR_MS;
-    const f0 = (ws === this.bagStart) ? 0 : this.fillAt(ws);
-    const cur = spanH > 0 ? (this.fill - f0) / spanH : 0;
-
-    this.rate = -1;
-    this.rateSrc = '';
-    if (spanH >= 24) {
-      this.rate = Math.max(cur, 0.05);
-      this.rateSrc = `直近 ${Math.round(spanH)} 時間のたまり方`;
-    } else if (this.prevBagRate > 0) {
-      const w = spanH / 24.0;
-      this.rate = w * Math.max(cur, 0) + (1 - w) * this.prevBagRate;
-      this.rateSrc = `いまの袋 ${Math.round(w * 100)}% ＋ 前の袋 ${Math.round((1 - w) * 100)}% のペース`;
-    } else if (spanH >= 6 && cur > 0) {
-      this.rate = cur;
-      this.rateSrc = `直近 ${Math.round(spanH)} 時間のたまり方`;
-    }
-    if (this.rate > 0) this.rate = Math.max(this.rate, 0.05);
-
-    this.d1 = nextDeadline(t);
-    this.d2 = nextDeadline(this.d1);
-    if (this.rate > 0) {
-      this.fillAtD1 = this.fill + (this.rate * (this.d1 - t)) / HOUR_MS;
-      this.fillAtD2 = this.fill + (this.rate * (this.d2 - t)) / HOUR_MS;
-      this.tFull = this.fill >= 100 ? t : t + ((100 - this.fill) / this.rate) * HOUR_MS;
-    } else {
-      this.fillAtD1 = -1;
-      this.fillAtD2 = -1;
-      this.tFull = -1;
-    }
-    this.decide(t);
-  }
-
-  decide(t) {
-    const holdD2 = (this.d2 - this.bagStart) / DAY_MS;
-    const w1 = dayWord(this.d1, t);
-    const w2 = dayWord(this.d2, t);
-    const today = w1 === '今日';
-    const takeLine = today ? `今日 ${hm(this.d1)} までに出しましょう` : `${w1}の朝に出しましょう`;
-
-    if (this.fill >= 90) {
-      this.decision = D_FULL;
-      this.headline = takeLine;
-      this.sub = `ほぼ満杯です（${Math.round(this.fill)}%）。${today ? '' : 'それまでは押し込みすぎないように。'}`;
-    } else if (this.fill < CFG.MIN_FILL_TO_COUNT) {
-      this.decision = D_EMPTY;
-      this.headline = 'まだ空っぽです';
-      this.sub = 'ごみを入れるたびに、出す日を予測し直します。';
-    } else if (this.rate <= 0) {
-      this.decision = D_COLLECTING;
-      this.headline = 'たまるペースを学習中';
-      this.sub = 'あと何回かごみを入れると、出す日を予測できます。';
-    } else if (this.fillAtD1 >= 100) {
-      this.decision = D_OVERFLOW;
-      this.headline = `${w1}より前に満杯になりそう`;
-      this.sub = `満杯予測は ${whenText(this.tFull, t)}。ごみをならすか、小さくしてから捨てましょう。`;
-    } else if (this.fillAtD2 >= 100 || holdD2 > CFG.MAX_HOLD_DAYS) {
-      this.decision = D_TAKE;
-      this.headline = takeLine;
-      if (this.fillAtD2 < 100) {
-        this.sub = `${w2}まで待つと ${Math.round(holdD2)} 日ためることになるため（衛生のため ${Math.round(CFG.MAX_HOLD_DAYS)} 日まで）。`;
-      } else {
-        this.sub = `${w2}まで待つと、あふれる見込みです（約 ${Math.round(Math.min(this.fillAtD2, 199))}%）。`;
-      }
-    } else {
-      this.decision = D_SKIP;
-      this.headline = today ? '今日は出さなくてOK' : `${w1}は見送りでOK`;
-      const ni = (today || w1 === '明日') ? '' : 'に';
-      this.sub = `${w2}まで待てば、袋を約 ${Math.round(this.fillAtD2)}% まで使えます（${w1}${ni}出すと ${Math.round(this.fillAtD1)}%）。`;
-    }
-  }
-
-  isAction() {
-    return this.decision === D_TAKE || this.decision === D_FULL || this.decision === D_OVERFLOW;
-  }
-
-  targetPickup() {
-    if (this.decision === D_SKIP) return this.d2;
-    if (this.isAction()) return this.d1;
-    return -1;
-  }
-
-  fillAt(t) {
-    if (t < this.hist[0].t) return this.hist[0].f;
-    let lo = 0, hi = this.hist.length - 1;
-    while (lo < hi) {
-      const mid = (lo + hi + 1) >> 1;
-      if (this.hist[mid].t <= t) lo = mid;
-      else hi = mid - 1;
-    }
-    return this.hist[lo].f;
-  }
-
-  pctOf(d) {
-    if (d < 0) return -1;
-    return Math.min(100, Math.max(0, ((this.emptyMm - d) * 100.0) / Math.max(1, this.emptyMm - this.fullMm)));
-  }
-
-  saveState() {
-    const obj = {
-      startMs: this.startMs,
-      bagStart: this.bagStart,
-      savedBags: this.savedBags,
-      usedBags: this.usedBags,
-      outFillSum: this.outFillSum,
-      prevBagRate: this.prevBagRate,
-      hist: this.hist
-    };
-    try { fs.writeFileSync(STATE_FILE, JSON.stringify(obj)); } catch (e) {}
-  }
-
-  loadState() {
-    if (!fs.existsSync(STATE_FILE)) return;
-    try {
-      const j = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-      this.startMs = j.startMs || this.startMs;
-      this.bagStart = j.bagStart || this.bagStart;
-      this.savedBags = j.savedBags || 0;
-      this.usedBags = j.usedBags || 0;
-      this.outFillSum = j.outFillSum || 0;
-      this.prevBagRate = j.prevBagRate ?? -1;
-      if (Array.isArray(j.hist) && j.hist.length > 0) {
-        this.hist = j.hist;
-        this.fill = this.hist[this.hist.length - 1].f;
-      }
-      this.lastDeadline = Date.now();
-    } catch (e) {}
-  }
-}
-
-// ================= Sim クラス（Sim.pde の移植） =================
-class Sim {
-  constructor(start, m) {
-    this.t = start;
-    this.m = m;
-    this.f = 0;
-    this.skew = 0;
-    this.lidUntilRealMs = 0;
-    this.preloading = false;
-  }
-
-  advanceTo(target) {
-    this.preloading = (target - this.t) > 2 * DAY_MS;
-    let steps = 0;
-    while (this.t + MIN_MS <= target && steps < 400000) {
-      this.t += MIN_MS;
-      this.minute(this.t);
-      this.m.update(this.t);
-      steps++;
-    }
-    this.preloading = false;
-  }
-
-  minute(tt) {
-    const d = jstDate(tt);
-    const h = d.getUTCHours();
-    const min = d.getUTCMinutes();
-
-    let p = 0.0012;
-    if      (h >= 18 && h < 23) p = 0.007;
-    else if (h >= 7  && h < 9)  p = 0.004;
-    else if (h >= 11 && h < 14) p = 0.002;
-    else if (h >= 1  && h < 6)  p = 0.0001;
-
-    if (Math.random() < p) {
-      this.throwSome(tt, 2 + Math.random() * 3.5);
-    }
-
-    if (h === 7 && min === 40 && dayWord(this.m.d1, tt) === '今日' && this.m.isAction()) {
-      this.takeOut(tt);
-    }
-
-    this.skew = Math.min(22, Math.max(-22, this.skew + (Math.random() * 2.4 - 1.2)));
-    this.emitS(tt);
-  }
-
-  distOf(pct) {
-    return Math.round(this.m.emptyMm - (pct / 100.0) * (this.m.emptyMm - this.m.fullMm));
-  }
-
-  throwSome(tt, pct) {
-    if (this.f >= 100) return;
-    const before = this.f;
-    this.f = Math.min(100, this.f + pct);
-    const now = Date.now();
-    this.m.handleLine(`E,${now},LID_OPEN,0,0`, tt);
-    this.m.handleLine(`E,${now},THROW,${this.distOf(before)},${this.distOf(this.f)}`, tt);
-    this.m.handleLine(`E,${now},LID_CLOSE,0,0`, tt);
-    if (this.f >= 100) this.m.handleLine(`E,${now},FULL,100,0`, tt);
-  }
-
-  emitS(tt) {
-    const base = this.distOf(this.f);
-    const a = base - Math.round(this.skew);
-    const b = base + Math.round(this.skew);
-    const lidState = Date.now() < this.lidUntilRealMs ? 2 : 0;
-    this.m.handleLine(`S,${Date.now()},${lidState},-1,${a},${b},${Math.round(this.f)}`, tt);
-  }
-
-  manualThrow(tt) {
-    this.lidUntilRealMs = Date.now() + 1500;
-    this.throwSome(tt, 3 + Math.random() * 4);
-    this.emitS(tt);
-  }
-
-  takeOut(tt) {
-    this.m.onBagOut(tt, this.m.fill);
-    this.f = 0;
-    this.skew = 0;
-    this.emitS(tt);
-  }
-
-  lidPulse() {
-    this.lidUntilRealMs = Date.now() + 2000;
-  }
-}
-
-// ================= アプリケーション状態とループ =================
-let demo = false;
-let autoLid = true;
-let timeScale = 1;
-let vNow = Date.now();
-let lastTickRealMs = Date.now();
-let lastSaveRealMs = Date.now();
-let commandQueue = [];
-
-let model = new Model(vNow);
-model.loadState();
-let sim = null;
-
-function startDemo() {
-  if (!demo && model) model.saveState();
-  demo = true;
-  timeScale = 1;
-  vNow = Date.now();
-  const start = vNow - 21 * DAY_MS;
-  model = new Model(start);
-  sim = new Sim(start, model);
-  model.handleLine('H,TRASHCAN,1.1,300,50', start);
-  sim.advanceTo(vNow); // 3週間分を一気に早送り生成
-  model.pushToast('デモモード：3週間分のデータを生成しました');
-}
-
-function startLive() {
-  demo = false;
-  timeScale = 1;
-  vNow = Date.now();
-  model = new Model(vNow);
-  model.loadState();
-  sim = null;
-  commandQueue.push('C,PING');
-  model.pushToast('実機モードに切り替えました');
-}
-
-// サーバー側ティック（250msごとに仮想時計とモデルを更新）
-setInterval(() => {
-  const nowReal = Date.now();
-  const dt = nowReal - lastTickRealMs;
-  lastTickRealMs = nowReal;
-
-  if (demo && sim) {
-    vNow += dt * timeScale;
-    sim.advanceTo(vNow);
-    model.lid = nowReal < sim.lidUntilRealMs ? 2 : 0;
-  } else {
-    vNow = nowReal;
-    if (nowReal - lastSaveRealMs > 60000) {
-      model.saveState();
-      lastSaveRealMs = nowReal;
-    }
-  }
-  model.update(vNow);
-}, 250);
-
-// ================= HTTP エンドポイント =================
-// 1. Arduino Uno R4 WiFi からの受信
-app.post('/api/line', (req, res) => {
-  const line = (req.body || '').trim();
-  if (!demo && line) {
-    model.handleLine(line, Date.now());
-  }
-  const nextCmd = (!demo && commandQueue.length > 0) ? commandQueue.shift() : 'OK';
-  res.send(nextCmd);
-});
-
-// 2. Webブラウザからの操作（キー操作 / ボタン操作）
-app.post('/api/action', (req, res) => {
-  let payload = {};
-  try { payload = JSON.parse(req.body); } catch (e) {}
-  const { act, val } = payload;
-
-  if (act === 'THROW') {
-    if (demo && sim) sim.manualThrow(vNow);
-    else commandQueue.push('C,THROW');
-  } else if (act === 'RESET') {
-    if (demo && sim) sim.takeOut(vNow);
-    else {
-      commandQueue.push('C,RESET');
-      model.onBagOut(vNow, model.fill);
-      model.saveState();
-    }
-    model.pushToast('袋を出しました。記録を区切ります');
-  } else if (act === 'OPEN') {
-    if (demo && sim) sim.lidPulse();
-    else commandQueue.push('C,OPEN');
-  } else if (act === 'CLOSE') {
-    if (!demo) commandQueue.push('C,CLOSE');
-  } else if (act === 'CAL_EMPTY' && !demo) {
-    commandQueue.push('C,CAL,EMPTY');
-    model.pushToast('いまの距離を「空」の基準にしました');
-  } else if (act === 'CAL_FULL' && !demo) {
-    commandQueue.push('C,CAL,FULL');
-    model.pushToast('いまの距離を「満杯」の基準にしました');
-  } else if (act === 'AUTO' && !demo) {
-    autoLid = !autoLid;
-    commandQueue.push(`C,AUTO,${autoLid ? 1 : 0}`);
-    model.pushToast(autoLid ? '自動開閉 ON' : '自動開閉 OFF');
-  } else if (act === 'SPEED') {
-    if (!demo) {
-      model.pushToast('実機モードでは時間を早送りできません');
-    } else {
-      const sc = [1, 60, 3600, 86400];
-      const nm = ['実時間', '1秒 = 1分', '1秒 = 1時間', '1秒 = 1日'];
-      const idx = Math.min(3, Math.max(0, Number(val) || 0));
-      timeScale = sc[idx];
-      model.pushToast(`時間の速さ：${nm[idx]}`);
-    }
-  } else if (act === 'TOGGLE_MODE') {
-    if (demo) startLive();
-    else startDemo();
-  }
-
-  res.json({ ok: true });
-});
-
-// 3. 画面描画用の全データ配信
-app.get('/api/state', (req, res) => {
-  const nowReal = Date.now();
-  const bagYen = CFG.BAG_LITERS * CFG.YEN_PER_LITER;
-  const yenSaved = model.savedBags * bagYen;
-  const plasticG = model.savedBags * CFG.BAG_GRAMS;
-  const co2G = plasticG * CFG.CO2_PER_G_PE;
-  const avgUse = model.usedBags > 0 ? model.outFillSum / model.usedBags : -1;
-  const daysTracked = (vNow - model.startMs) / DAY_MS;
-  const annualBags = daysTracked >= 7 ? (model.savedBags / daysTracked) * 365 : -1;
-
-  res.json({
-    cfg: CFG,
-    demo,
-    autoLid,
-    timeScale,
-    vNow,
-    alive: demo ? true : (nowReal - model.lastRxRealMs < 6000),
-    errActive: (model.errCode > 0 && nowReal - model.errRealMs < 15000) ? model.errCode : 0,
-    model: {
-      emptyMm: model.emptyMm,
-      fullMm: model.fullMm,
-      fill: model.fill,
-      dA: model.dA,
-      dB: model.dB,
-      pctA: model.pctOf(model.dA),
-      pctB: model.pctOf(model.dB),
-      lid: model.lid,
-      rate: model.rate,
-      rateSrc: model.rateSrc,
-      d1: model.d1,
-      d2: model.d2,
-      tFull: model.tFull,
-      decision: model.decision,
-      isAction: model.isAction(),
-      targetPickup: model.targetPickup(),
-      headline: model.headline,
-      sub: model.sub,
-      savedBags: model.savedBags,
-      usedBags: model.usedBags,
-      bagYen,
-      yenSaved,
-      plasticG,
-      co2G,
-      avgUse,
-      daysTracked,
-      annualBags,
-      lastThrowT: model.lastThrowT,
-      lastThrowPct: model.lastThrowPct,
-      hist: model.hist,
-      toasts: model.toasts.filter(t => nowReal - t.at < 2800)
-    }
+async function sendAct(act, val) {
+  await fetch('/api/action', {
+    method: 'POST',
+    body: JSON.stringify({ act, val })
   });
+  poll();
+}
+
+// キーボードショートカット（SmartBinUI と同じ操作感）
+window.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  const k = e.key.toLowerCase();
+  if (k === 't') sendAct('THROW');
+  else if (k === 'r') sendAct('RESET');
+  else if (k === 'o') sendAct('OPEN');
+  else if (k === 'c') sendAct('CLOSE');
+  else if (k === 'e') sendAct('CAL_EMPTY');
+  else if (k === 'f') sendAct('CAL_FULL');
+  else if (k === 'a') sendAct('AUTO');
+  else if (k === 'd') sendAct('TOGGLE_MODE');
+  else if (k >= '1' && k <= '4') sendAct('SPEED', parseInt(k, 10) - 1);
 });
 
-app.listen(PORT, () => console.log(`Smart Bin Server listening on port ${PORT}`));
+async function poll() {
+  try {
+    const res = await fetch('/api/state');
+    latestData = await res.json();
+    updateDOM(latestData);
+  } catch (e) {}
+}
+
+function updateDOM(data) {
+  const { cfg, demo, autoLid, timeScale, vNow, alive, errActive, model: m } = data;
+
+  // ヘッダー
+  document.getElementById('clockText').textContent = `${md(vNow)}  ${hm(vNow)}`;
+  const modeBadge = document.getElementById('modeBadge');
+  if (demo) {
+    const nm = ['x1', 'x60', 'x3600', 'x86400'];
+    const idx = timeScale <= 1 ? 0 : timeScale <= 60 ? 1 : timeScale <= 3600 ? 2 : 3;
+    modeBadge.textContent = `DEMO  ${nm[idx]}`;
+  } else {
+    modeBadge.textContent = alive ? 'LIVE  WIFI' : 'NO SIGNAL';
+  }
+
+  const errBadge = document.getElementById('errBadge');
+  if (errActive > 0) {
+    errBadge.style.display = 'inline-block';
+    errBadge.textContent = `SENSOR ERROR ${errActive}`;
+  } else {
+    errBadge.style.display = 'none';
+  }
+
+  // 今日の判断
+  document.getElementById('headline').textContent = m.headline;
+  document.getElementById('subline').textContent = m.sub;
+  const bar = document.getElementById('heroBar');
+  bar.className = m.isAction ? 'hero-bar action' : 'hero-bar';
+
+  document.getElementById('agNext').textContent = `${md(m.d1)} ${hm(m.d1)}まで`;
+  document.getElementById('agFull').textContent = m.fill >= 100 ? '満杯です' : (m.tFull > 0 ? whenText(m.tFull, vNow) : '学習中');
+  document.getElementById('agPace').textContent = m.rate > 0 ? `1日に +${Math.round(m.rate * 24)}%` : '学習中';
+
+  // 充填率カード
+  const lidNames = ['Lid closed', 'Lid opening', 'Lid open', 'Lid closing'];
+  const lidEl = document.getElementById('lidText');
+  lidEl.textContent = lidNames[Math.min(3, Math.max(0, m.lid))];
+  lidEl.style.opacity = m.lid === 0 ? '0.6' : '1';
+
+  let skewStr = '内側センサの値を待っています';
+  if (m.pctA >= 0 && m.pctB >= 0) {
+    if (Math.abs(m.pctA - m.pctB) >= 15) {
+      skewStr = `${m.pctA > m.pctB ? '手前（A）' : '奥（B）'}に片寄り — ならすとまだ入ります`;
+    } else {
+      skewStr = 'ごみは均一に入っています';
+    }
+  }
+  document.getElementById('skewText').textContent = skewStr;
+
+  if (m.lastThrowT < 0) {
+    document.getElementById('lastThrowText').textContent = '投入はまだありません';
+  } else {
+    const days = dayKey(vNow) - dayKey(m.lastThrowT);
+    const t = hm(m.lastThrowT);
+    const when = days === 0 ? t : (days === 1 ? `昨日 ${t}` : `${md(m.lastThrowT)} ${t}`);
+    document.getElementById('lastThrowText').textContent = `最後の投入 ${when} +${Math.round(m.lastThrowPct)}%`;
+  }
+
+  // 節約カード
+  document.getElementById('savedBagsText').textContent = `指定袋 ${m.savedBags} 枚ぶん`;
+  document.getElementById('naiveBagsVal').textContent = `${m.savedBags + m.usedBags} 枚`;
+  document.getElementById('usedBagsVal').textContent = `${m.usedBags} 枚`;
+  document.getElementById('avgUseVal').textContent = m.avgUse < 0 ? '—' : `${Math.round(m.avgUse)} %`;
+  document.getElementById('moneyNote').textContent = `札幌市指定袋 ${cfg.BAG_LITERS}L・1枚 ${m.bagYen}円で計算`;
+
+  // 環境効果カード
+  document.getElementById('plasticText').textContent = `プラスチック ${Math.round(m.plasticG)} g を削減`;
+  document.getElementById('ecoNote').textContent = `袋1枚 ${Math.round(cfg.BAG_GRAMS)}g を焼却した場合の試算`;
+
+  const sapporoArea = document.getElementById('sapporoEcoArea');
+  if (m.annualBags < 0) {
+    sapporoArea.innerHTML = `<div style="font-size:13px;opacity:0.75;">7日分のデータがたまると試算します</div>`;
+  } else {
+    const bags = m.annualBags * cfg.SAPPORO_HOUSEHOLDS;
+    const co2t = (bags * cfg.BAG_GRAMS * cfg.CO2_PER_G_PE) / 1e6;
+    const trees = (co2t * 1000) / cfg.CEDAR_KG_PER_YEAR;
+    const yen = bags * m.bagYen;
+    sapporoArea.innerHTML = `
+      <div class="eco-big">CO2 ${jpNum(co2t)} t</div>
+      <div class="eco-line">＝ スギ ${jpNum(trees)} 本が1年で吸う量</div>
+      <div class="eco-line" style="opacity:0.75;">袋 ${jpNum(bags)} 枚・${jpNum(yen)} 円</div>
+    `;
+  }
+
+  // グラフ注釈
+  document.getElementById('rateSrcText').textContent =
+    `予測の根拠：${m.rateSrc ? m.rateSrc : 'データを集めています'}`;
+
+  // フッターボタン状態
+  document.getElementById('btnMode').textContent = demo ? '実機へ切替 (D)' : 'デモへ切替 (D)';
+  document.getElementById('speedGroup').style.display = demo ? 'flex' : 'none';
+  document.getElementById('liveGroup').style.display = demo ? 'none' : 'flex';
+  document.getElementById('btnClose').style.display = demo ? 'none' : 'inline-block';
+  document.getElementById('btnAuto').textContent = `自動開閉: ${autoLid ? 'ON' : 'OFF'} (A)`;
+  document.getElementById('trackedText').textContent = `記録 ${m.daysTracked.toFixed(1)} 日`;
+
+  const spIdx = timeScale <= 1 ? 0 : timeScale <= 60 ? 1 : timeScale <= 3600 ? 2 : 3;
+  for (let i = 0; i < 4; i++) {
+    document.getElementById('sp' + i).className = (i === spIdx) ? 'ctrl active' : 'ctrl';
+  }
+
+  // トースト通知
+  const tw = document.getElementById('toastWrap');
+  tw.innerHTML = m.toasts.map(t => `<div class="toast">${t.text}</div>`).join('');
+}
+
+// 60fps スムーズ数値・グラフ描画ループ（View.pde の再現）
+function renderLoop() {
+  if (latestData) {
+    const { cfg, vNow, model: m } = latestData;
+    const e = 0.14;
+    dispFill += (m.fill - dispFill) * e;
+    dispA += (Math.max(m.pctA, 0) - dispA) * e;
+    dispB += (Math.max(m.pctB, 0) - dispB) * e;
+    dispYen += (m.yenSaved - dispYen) * 0.12;
+    dispCo2 += (m.co2G - dispCo2) * 0.12;
+
+    document.getElementById('fillNum').textContent = Math.round(dispFill);
+    document.getElementById('barA').style.height = Math.min(100, Math.max(0, dispA)) + '%';
+    document.getElementById('barAvg').style.height = Math.min(100, Math.max(0, dispFill)) + '%';
+    document.getElementById('barB').style.height = Math.min(100, Math.max(0, dispB)) + '%';
+
+    document.getElementById('yenBig').textContent = '¥' + Math.round(dispYen).toLocaleString();
+    const isKg = dispCo2 >= 1000;
+    document.getElementById('co2Big').textContent = isKg ? (dispCo2 / 1000).toFixed(2) : Math.round(dispCo2);
+    document.getElementById('co2Unit').textContent = (isKg ? 'kg' : 'g') + ' CO2';
+
+    drawHistoryCanvas(m, vNow, cfg);
+  }
+  requestAnimationFrame(renderLoop);
+}
+
+function drawHistoryCanvas(m, vNow, cfg) {
+  const canvas = document.getElementById('histCanvas');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  if (canvas.width !== Math.round(rect.width * dpr) || canvas.height !== Math.round(rect.height * dpr)) {
+    canvas.width = Math.round(rect.width * dpr);
+    canvas.height = Math.round(rect.height * dpr);
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.save();
+  ctx.scale(dpr, dpr);
+  const w = rect.width;
+  const h = rect.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const px = 42, pw = w - 54, py = 18, ph = h - 42;
+  const tg = m.targetPickup;
+  const tA = vNow - 4 * DAY_MS;
+  const tB = Math.min(vNow + 8 * DAY_MS, Math.max(vNow + 3 * DAY_MS, tg + 12 * HOUR_MS));
+
+  const tx = t => px + ((t - tA) / (tB - tA)) * pw;
+  const ty = f => py + ph - (Math.min(100, Math.max(0, f)) / 100.0) * ph;
+
+  // 目盛り
+  ctx.font = '11px Inter, sans-serif';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let v = 0; v <= 100; v += 50) {
+    const yy = ty(v);
+    ctx.strokeStyle = v === 0 ? 'rgba(32,81,130,0.35)' : 'rgba(32,81,130,0.12)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(px, yy); ctx.lineTo(px + pw, yy); ctx.stroke();
+    ctx.fillStyle = 'rgba(32,81,130,0.6)';
+    ctx.fillText(v + '%', px - 8, yy);
+  }
+
+  // 日付グリッド
+  const d0 = jstDate(tA);
+  const baseDayMs = Date.UTC(d0.getUTCFullYear(), d0.getUTCMonth(), d0.getUTCDate()) - JST_OFFSET;
+  ctx.font = '11px "Noto Sans JP", sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  for (let i = 0; i <= 13; i++) {
+    const ms = baseDayMs + i * DAY_MS;
+    if (ms < tA || ms > tB) continue;
+    const X = tx(ms);
+    ctx.strokeStyle = 'rgba(32,81,130,0.09)';
+    ctx.beginPath(); ctx.moveTo(X, py); ctx.lineTo(X, py + ph); ctx.stroke();
+    if (X > px + pw - 44) continue;
+    const jd = jstDate(ms);
+    ctx.fillStyle = 'rgba(32,81,130,0.6)';
+    ctx.fillText(`${jd.getUTCDate()}（${WD[getDow1to7(ms) - 1]}）`, X + 4, py + ph + 6);
+  }
+
+  // 収集日の締切線
+  let dl = nextDeadlineClient(tA - 1, cfg);
+  ctx.font = '10px "Noto Sans JP", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  while (dl < tB) {
+    const X = tx(dl);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(32,81,130,0.35)';
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath(); ctx.moveTo(X, py); ctx.lineTo(X, py + ph); ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = 'rgba(32,81,130,0.55)';
+    ctx.fillText('収集', X, py - 3);
+    dl = nextDeadlineClient(dl, cfg);
+  }
+
+  // 実績値の算出
+  let prev = m.hist.length > 0 ? m.hist[0].f : 0;
+  for (const s of m.hist) {
+    if (s.t <= tA) prev = s.f;
+    else break;
+  }
+  const nowX = tx(vNow);
+
+  // 塗りつぶし
+  ctx.fillStyle = 'rgba(32, 81, 130, 0.15)';
+  ctx.beginPath();
+  ctx.moveTo(px, ty(0));
+  ctx.lineTo(px, ty(prev));
+  let pv = prev;
+  for (const s of m.hist) {
+    if (s.t <= tA || s.t > vNow) continue;
+    const X = tx(s.t);
+    ctx.lineTo(X, ty(pv));
+    ctx.lineTo(X, ty(s.f));
+    pv = s.f;
+  }
+  ctx.lineTo(nowX, ty(pv));
+  ctx.lineTo(nowX, ty(0));
+  ctx.closePath();
+  ctx.fill();
+
+  // 実線
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(px, ty(prev));
+  pv = prev;
+  for (const s of m.hist) {
+    if (s.t <= tA || s.t > vNow) continue;
+    const X = tx(s.t);
+    ctx.lineTo(X, ty(pv));
+    ctx.lineTo(X, ty(s.f));
+    pv = s.f;
+  }
+  ctx.lineTo(nowX, ty(pv));
+  ctx.stroke();
+
+  // 予測点線
+  if (m.rate > 0 && m.fill < 100) {
+    const tEnd = m.tFull > 0 ? Math.min(m.tFull, tB) : tB;
+    const fEnd = Math.min(100, m.fill + (m.rate * (tEnd - vNow)) / HOUR_MS);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(32, 81, 130, 0.78)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 5]);
+    ctx.beginPath();
+    ctx.moveTo(nowX, ty(m.fill));
+    ctx.lineTo(tx(tEnd), ty(fEnd));
+    if (tEnd < tB) ctx.lineTo(px + pw, ty(100));
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // NOW 線
+  ctx.strokeStyle = 'rgba(32, 81, 130, 0.65)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(nowX, py - 4); ctx.lineTo(nowX, py + ph); ctx.stroke();
+  ctx.font = 'bold 10px Inter, sans-serif';
+  ctx.fillStyle = 'rgba(32, 81, 130, 0.8)';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText('NOW', nowX + 4, py + 2);
+
+  // 「ここで出す」マーカー
+  if (tg > 0 && tg <= tB) {
+    const f = m.rate > 0 ? Math.min(100, m.fill + (m.rate * (tg - vNow)) / HOUR_MS) : m.fill;
+    const X = tx(tg), Y = ty(f);
+    ctx.fillStyle = 'rgba(214, 88, 154, 0.24)';
+    ctx.beginPath(); ctx.arc(X, Y, 13, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = ACCENT;
+    ctx.beginPath(); ctx.arc(X, Y, 5.5, 0, Math.PI * 2); ctx.fill();
+
+    ctx.font = 'bold 12px "Noto Sans JP", sans-serif';
+    ctx.textAlign = X > px + pw - 60 ? 'right' : 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText('ここで出す', X > px + pw - 60 ? X + 6 : X, Y - 14);
+  }
+
+  ctx.restore();
+}
+
+setInterval(poll, 300);
+poll();
+requestAnimationFrame(renderLoop);
+</script>
+</body>
+</html>
