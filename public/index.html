@@ -283,6 +283,11 @@
     font-size: 14px;
     box-shadow: 0 4px 16px rgba(0,0,0,0.12);
     animation: fadeIn 0.2s ease-out;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+  }
+  .toast.hide {
+    opacity: 0;
+    transform: translateY(-6px);
   }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
 </style>
@@ -595,8 +600,31 @@ function updateDOM(data) {
     document.getElementById('sp' + i).className = (i === spIdx) ? 'ctrl active' : 'ctrl';
   }
 
+  syncToasts(m.toasts);
+}
+
+const activeToasts = new Map();
+function syncToasts(toasts) {
   const tw = document.getElementById('toastWrap');
-  tw.innerHTML = m.toasts.map(t => `<div class="toast">${t.text}</div>`).join('');
+  const currentIds = new Set(toasts.map(t => t.id));
+
+  for (const [id, el] of activeToasts.entries()) {
+    if (!currentIds.has(id)) {
+      el.classList.add('hide');
+      activeToasts.delete(id);
+      setTimeout(() => el.remove(), 350);
+    }
+  }
+
+  for (const t of toasts) {
+    if (!activeToasts.has(t.id)) {
+      const el = document.createElement('div');
+      el.className = 'toast';
+      el.textContent = t.text;
+      tw.appendChild(el);
+      activeToasts.set(t.id, el);
+    }
+  }
 }
 
 function renderLoop() {
