@@ -37,6 +37,24 @@ const D_OVERFLOW   = 5;
 
 const WD = ['月', '火', '水', '木', '金', '土', '日'];
 
+const SPEED_SCALES = [1, 60, 3600, 21600, 86400];
+const SPEED_NAMES  = [
+  '実時間 (×1)',
+  '1秒 = 1分 (×60)',
+  '1秒 = 1時間 (×3600)',
+  '1秒 = 6時間 (×21600)',
+  '1秒 = 1日 (×86400)'
+];
+
+// ================= グローバル状態（必ずクラス定義より先に宣言） =================
+let autoLid = true;
+let timeScale = 1;
+let vNow = Date.now();
+let lastTickRealMs = Date.now();
+let lastSaveRealMs = Date.now();
+let simLidUntilRealMs = 0;
+let commandQueue = [];
+
 // ================= 日本時間（JST）ヘルパー =================
 function jstDate(ms) { return new Date(ms + JST_OFFSET); }
 function getDow1to7(ms) {
@@ -121,9 +139,9 @@ class Model {
     this.fillAtD1 = -1;
     this.fillAtD2 = -1;
     this.tFull = -1;
-    this.decision = D_COLLECTING;
-    this.headline = '';
-    this.sub = '';
+    this.decision = D_EMPTY;
+    this.headline = 'まだ空っぽです';
+    this.sub = 'ごみを入れるたびに、出す日を予測し直します。';
   }
 
   pushToast(text) {
@@ -225,6 +243,10 @@ class Model {
   }
 
   addSample(t, f) {
+    if (this.hist.length === 0) {
+      this.hist.push({ t, f });
+      return;
+    }
     const last = this.hist[this.hist.length - 1];
     if (t < last.t) t = last.t;
     if (Math.abs(f - last.f) >= 1 || t - last.t >= 30 * MIN_MS) {
@@ -331,6 +353,7 @@ class Model {
   }
 
   fillAt(t) {
+    if (this.hist.length === 0) return 0;
     if (t < this.hist[0].t) return this.hist[0].f;
     let lo = 0, hi = this.hist.length - 1;
     while (lo < hi) {
@@ -363,7 +386,7 @@ class Model {
     try { fs.writeFileSync(STATE_FILE, JSON.stringify(obj)); } catch (e) {}
   }
 
-  loadState() {
+  loadState(nowMs) {
     if (!fs.existsSync(STATE_FILE)) return;
     try {
       const j = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
@@ -372,42 +395,28 @@ class Model {
       this.savedBags = j.savedBags || 0;
       this.usedBags = j.usedBags || 0;
       this.outFillSum = j.outFillSum || 0;
-      this.prevBagRate = j.prevBagRate ?? -1;
+      this.prevBagRate = (typeof j.prevBagRate === 'number') ? j.prevBagRate : -1;
       if (Array.isArray(j.hist) && j.hist.length > 0) {
         this.hist = j.hist;
         this.fill = this.hist[this.hist.length - 1].f;
       }
-      this.lastDeadline = vNow;
-    } catch (e) {}
+      this.lastDeadline = nowMs;
+    } catch (e) {
+      console.error('state.json load error:', e);
+    }
   }
 }
 
-// ================= アプリケーション状態と時計進行 =================
-const SPEED_SCALES = [1, 60, 3600, 21600, 86400];
-const SPEED_NAMES  = [
-  '実時間 (×1)',
-  '1秒 = 1分 (×60)',
-  '1秒 = 1時間 (×3600)',
-  '1秒 = 6時間 (×21600)',
-  '1秒 = 1日 (×86400)'
-];
-
-let autoLid = true;
-let timeScale = 1;
-let vNow = Date.now();
-let lastTickRealMs = Date.now();
-let lastSaveRealMs = Date.now();
-let simLidUntilRealMs = 0;
-let commandQueue = [];
-
+// ================= モデル初期化 =================
 let model = new Model(vNow);
-model.loadState();
+model.loadState(vNow);
+model.update(vNow);
 
 function isDeviceAlive() {
   return (Date.now() - model.lastRxRealMs) < 6000;
 }
 
-// 100msごとに細かく進行させ、早送り時のカクつきを防止
+// 100msごとに時計とモデルを更新
 setInterval(() => {
   const nowReal = Date.now();
   const dt = nowReal - lastTickRealMs;
@@ -538,6 +547,7 @@ app.post('/api/action', (req, res) => {
     model = new Model(vNow);
     model.emptyMm = keepEmpty;
     model.fullMm = keepFull;
+    model.update(vNow);
     if (alive) model.ignoreStaleUntilRealMs = Date.now() + 4000;
     simLidUntilRealMs = 0;
     model.saveState();
