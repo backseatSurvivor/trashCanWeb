@@ -172,7 +172,6 @@ class Model {
   }
 
   setFill(f, t) {
-    // 10%以上入っていた状態から急にほぼゼロ（5%以下）になったら、ごみを捨てた（袋を出した）と判断
     if (this.fill >= 10 && f <= CFG.MIN_FILL_TO_COUNT) {
       const prevFill = Math.round(this.fill);
       this.onBagOut(t, this.fill);
@@ -384,6 +383,15 @@ class Model {
 }
 
 // ================= アプリケーション状態と時計進行 =================
+const SPEED_SCALES = [1, 60, 3600, 21600, 86400];
+const SPEED_NAMES  = [
+  '実時間 (×1)',
+  '1秒 = 1分 (×60)',
+  '1秒 = 1時間 (×3600)',
+  '1秒 = 6時間 (×21600)',
+  '1秒 = 1日 (×86400)'
+];
+
 let autoLid = true;
 let timeScale = 1;
 let vNow = Date.now();
@@ -399,6 +407,7 @@ function isDeviceAlive() {
   return (Date.now() - model.lastRxRealMs) < 6000;
 }
 
+// 100msごとに細かく進行させ、早送り時のカクつきを防止
 setInterval(() => {
   const nowReal = Date.now();
   const dt = nowReal - lastTickRealMs;
@@ -425,7 +434,7 @@ setInterval(() => {
     model.saveState();
     lastSaveRealMs = nowReal;
   }
-}, 250);
+}, 100);
 
 // ================= HTTP エンドポイント =================
 app.post('/api/line', (req, res) => {
@@ -517,11 +526,9 @@ app.post('/api/action', (req, res) => {
     if (alive) commandQueue.push(`C,AUTO,${autoLid ? 1 : 0}`);
     model.pushToast(autoLid ? '自動開閉 ON' : '自動開閉 OFF');
   } else if (act === 'SPEED') {
-    const sc = [1, 60, 3600, 86400];
-    const nm = ['実時間 (×1)', '1秒 = 1分 (×60)', '1秒 = 1時間 (×3600)', '1秒 = 1日 (×86400)'];
-    const idx = Math.min(3, Math.max(0, Number(val) || 0));
-    timeScale = sc[idx];
-    model.pushToast(`時間の速さ：${nm[idx]}`);
+    const idx = Math.min(SPEED_SCALES.length - 1, Math.max(0, Number(val) || 0));
+    timeScale = SPEED_SCALES[idx];
+    model.pushToast(`時間の速さ：${SPEED_NAMES[idx]}`);
   } else if (act === 'RESET_CLOCK') {
     timeScale = 1;
     vNow = Date.now();
