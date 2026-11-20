@@ -20,13 +20,15 @@ const CFG = {
   CO2_PER_G_PE: 3.14,          // PE 1g 焼却時の CO2 [g]
   CEDAR_KG_PER_YEAR: 8.8,      // スギ1本の年間CO2吸収量 [kg]
   SAPPORO_HOUSEHOLDS: 1005912, // 札幌市の世帯数
-  MIN_FILL_TO_COUNT: 5         // ごみなし（ほぼゼロ）とみなす閾値 [%]
+  MIN_FILL_TO_COUNT: 5,        // ごみなし（ほぼゼロ）とみなす閾値 [%]
+  BAG_OUT_CONFIRM_COUNT: 2     // 袋出し自動検知に必要な連続回数（約3秒）
 };
 
 const MIN_MS = 60000;
 const HOUR_MS = 3600000;
 const DAY_MS = 86400000;
 const JST_OFFSET = 9 * HOUR_MS;
+const CMD_TTL_MS = 10000;
 
 const D_COLLECTING = 0;
 const D_EMPTY      = 1;
@@ -115,6 +117,7 @@ class Model {
     this.errCode = 0;
     this.errRealMs = -100000;
     this.ignoreStaleUntilRealMs = 0;
+    this.lowFillStreak = 0;
 
     this.hist = [{ t: start, f: 0 }];
     this.log = [];
@@ -180,25 +183,39 @@ class Model {
         this.ignoreStaleUntilRealMs = 0;
       }
 
-      this.dA = parseInt(p[4], 10);
-      this.dB = parseInt(p[5], 10);
-      this.setFill(f, t);
+      const nextDA = parseInt(p[4], 10);
+      const nextDB = parseInt(p[5], 10);
+      const fillStatus = this.setFill(f, t, true);
+      if (fillStatus === 'updated') {
+        this.dA = nextDA;
+        this.dB = nextDB;
+      }
     } else if (k === 'E' && p.length >= 3) {
       if (Date.now() < this.ignoreStaleUntilRealMs) return;
       this.onEvent(p, t);
     }
   }
 
-  setFill(f, t) {
+  setFill(f, t, fromDevice = false) {
     if (this.fill >= 10 && f <= CFG.MIN_FILL_TO_COUNT) {
+      if (fromDevice) {
+        this.lowFillStreak++;
+        if (this.lowFillStreak < CFG.BAG_OUT_CONFIRM_COUNT) {
+          return 'held';
+        }
+      }
       const prevFill = Math.round(this.fill);
+      this.lowFillStreak = 0;
       this.onBagOut(t, this.fill);
-      commandQueue.push('C,RESET');
+      enqueueCommand('C,RESET');
+      this.saveState();
       this.evToast(`ごみを捨てたと判断しました（使用率 ${prevFill}%）`);
-      return;
+      return 'bagout';
     }
+    this.lowFillStreak = 0;
     this.fill = f;
     this.addSample(t, f);
+    return 'updated';
   }
 
   onEvent(p, t) {
@@ -227,6 +244,7 @@ class Model {
   }
 
   onBagOut(t, f) {
+    this.lowFillStreak = 0;
     if (f >= CFG.MIN_FILL_TO_COUNT) {
       this.usedBags++;
       this.outFillSum += f;
@@ -375,23 +393,48 @@ class Model {
 
   saveState() {
     const obj = {
+      savedAtVNow: vNow,
       startMs: this.startMs,
       bagStart: this.bagStart,
+      lastDeadline: this.lastDeadline,
+      bagOutSinceDeadline: this.bagOutSinceDeadline,
+      emptyMm: this.emptyMm,
+      fullMm: this.fullMm,
       savedBags: this.savedBags,
       usedBags: this.usedBags,
       outFillSum: this.outFillSum,
       prevBagRate: this.prevBagRate,
       hist: this.hist
     };
-    try { fs.writeFileSync(STATE_FILE, JSON.stringify(obj)); } catch (e) {}
+    try {
+      const tmp = STATE_FILE + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(obj));
+      fs.renameSync(tmp, STATE_FILE);
+    } catch (e) {}
   }
 
   loadState(nowMs) {
     if (!fs.existsSync(STATE_FILE)) return;
     try {
       const j = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+      const maxAllowedT = nowMs + 5 * MIN_MS;
+      const lastHistT = (Array.isArray(j.hist) && j.hist.length > 0) ? j.hist[j.hist.length - 1].t : 0;
+      if ((j.startMs && j.startMs > maxAllowedT) ||
+          (j.bagStart && j.bagStart > maxAllowedT) ||
+          (lastHistT > maxAllowedT) ||
+          (j.savedAtVNow && j.savedAtVNow > maxAllowedT)) {
+        console.warn('state.json has future fast-forward timestamps; resetting to clean state.');
+        try { fs.unlinkSync(STATE_FILE); } catch (e) {}
+        return;
+      }
+
+      if (Number.isInteger(j.emptyMm) && Number.isInteger(j.fullMm) && j.emptyMm > j.fullMm && j.fullMm > 0) {
+        this.emptyMm = j.emptyMm;
+        this.fullMm = j.fullMm;
+      }
       this.startMs = j.startMs || this.startMs;
       this.bagStart = j.bagStart || this.bagStart;
+      this.bagOutSinceDeadline = Boolean(j.bagOutSinceDeadline);
       this.savedBags = j.savedBags || 0;
       this.usedBags = j.usedBags || 0;
       this.outFillSum = j.outFillSum || 0;
@@ -400,7 +443,9 @@ class Model {
         this.hist = j.hist;
         this.fill = this.hist[this.hist.length - 1].f;
       }
-      this.lastDeadline = nowMs;
+      this.lastDeadline = (typeof j.lastDeadline === 'number' && j.lastDeadline <= nowMs && j.lastDeadline >= nowMs - 15 * DAY_MS)
+        ? j.lastDeadline
+        : nowMs;
     } catch (e) {
       console.error('state.json load error:', e);
     }
@@ -414,6 +459,27 @@ model.update(vNow);
 
 function isDeviceAlive() {
   return (Date.now() - model.lastRxRealMs) < 6000;
+}
+
+function enqueueCommand(cmd) {
+  if (!isDeviceAlive()) return;
+  const now = Date.now();
+  const isAuto = cmd.startsWith('C,AUTO,');
+  commandQueue = commandQueue.filter(item =>
+    (now - item.at) < CMD_TTL_MS &&
+    item.cmd !== cmd &&
+    !(isAuto && item.cmd.startsWith('C,AUTO,'))
+  );
+  commandQueue.push({ cmd, at: now });
+}
+
+function dequeueCommand() {
+  const now = Date.now();
+  while (commandQueue.length > 0) {
+    const item = commandQueue.shift();
+    if ((now - item.at) < CMD_TTL_MS) return item.cmd;
+  }
+  return 'OK';
 }
 
 // 100msごとに時計とモデルを更新
@@ -446,13 +512,17 @@ setInterval(() => {
 }, 100);
 
 // ================= HTTP エンドポイント =================
+app.get('/healthz', (req, res) => {
+  res.status(200).json({ ok: true, alive: isDeviceAlive(), uptimeSec: Math.round(process.uptime()) });
+});
+
 app.post('/api/line', (req, res) => {
   const line = (req.body || '').trim();
   if (line) {
     model.handleLine(line, vNow);
   }
-  const nextCmd = commandQueue.length > 0 ? commandQueue.shift() : 'OK';
-  res.send(nextCmd);
+  const nextCmd = dequeueCommand();
+  res.type('text/plain').send(nextCmd);
 });
 
 app.post('/api/action', (req, res) => {
@@ -463,7 +533,7 @@ app.post('/api/action', (req, res) => {
 
   if (act === 'THROW') {
     if (alive) {
-      commandQueue.push('C,THROW');
+      enqueueCommand('C,THROW');
       model.pushToast('実機に投入コマンドを送信しました');
     } else {
       if (model.fill >= 100) {
@@ -492,7 +562,7 @@ app.post('/api/action', (req, res) => {
     }
   } else if (act === 'RESET') {
     if (alive) {
-      commandQueue.push('C,RESET');
+      enqueueCommand('C,RESET');
       model.ignoreStaleUntilRealMs = Date.now() + 4000;
     }
     simLidUntilRealMs = 0;
@@ -502,7 +572,7 @@ app.post('/api/action', (req, res) => {
     model.pushToast('袋を出しました（0%から再スタート）');
   } else if (act === 'OPEN') {
     if (alive) {
-      commandQueue.push('C,OPEN');
+      enqueueCommand('C,OPEN');
     } else {
       simLidUntilRealMs = Date.now() + 2500;
       model.lid = 2;
@@ -510,7 +580,7 @@ app.post('/api/action', (req, res) => {
     }
   } else if (act === 'CLOSE') {
     if (alive) {
-      commandQueue.push('C,CLOSE');
+      enqueueCommand('C,CLOSE');
     } else {
       simLidUntilRealMs = 0;
       model.lid = 0;
@@ -518,21 +588,21 @@ app.post('/api/action', (req, res) => {
     }
   } else if (act === 'CAL_EMPTY') {
     if (alive) {
-      commandQueue.push('C,CAL,EMPTY');
+      enqueueCommand('C,CAL,EMPTY');
       model.pushToast('いまの距離を「空」の基準にしました');
     } else {
       model.pushToast('実機接続時のみ基準設定できます');
     }
   } else if (act === 'CAL_FULL') {
     if (alive) {
-      commandQueue.push('C,CAL,FULL');
+      enqueueCommand('C,CAL,FULL');
       model.pushToast('いまの距離を「満杯」の基準にしました');
     } else {
       model.pushToast('実機接続時のみ基準設定できます');
     }
   } else if (act === 'AUTO') {
     autoLid = !autoLid;
-    if (alive) commandQueue.push(`C,AUTO,${autoLid ? 1 : 0}`);
+    if (alive) enqueueCommand(`C,AUTO,${autoLid ? 1 : 0}`);
     model.pushToast(autoLid ? '自動開閉 ON' : '自動開閉 OFF');
   } else if (act === 'SPEED') {
     const idx = Math.min(SPEED_SCALES.length - 1, Math.max(0, Number(val) || 0));
@@ -541,7 +611,8 @@ app.post('/api/action', (req, res) => {
   } else if (act === 'RESET_CLOCK') {
     timeScale = 1;
     vNow = Date.now();
-    if (alive) commandQueue.push('C,RESET');
+    commandQueue = [];
+    if (alive) enqueueCommand('C,RESET');
     const keepEmpty = model.emptyMm;
     const keepFull = model.fullMm;
     model = new Model(vNow);
