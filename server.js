@@ -56,6 +56,9 @@ let lastTickRealMs = Date.now();
 let lastSaveRealMs = Date.now();
 let simLidUntilRealMs = 0;
 let commandQueue = [];
+let demoSkew = 0;
+let nextDemoThrowRealMs = Date.now() + 5000;
+let nextDemoThrowVMs = vNow + 4 * HOUR_MS;
 
 // ================= 日本時間（JST）ヘルパー =================
 function jstDate(ms) { return new Date(ms + JST_OFFSET); }
@@ -113,6 +116,7 @@ class Model {
     this.dHand = -1;
     this.lid = 0;
     this.hello = false;
+    this.deviceKind = 'none'; // 'none' | 'real' | 'demo'
     this.lastRxRealMs = -100000;
     this.errCode = 0;
     this.errRealMs = -100000;
@@ -171,10 +175,34 @@ class Model {
       this.fullMm = parseInt(p[4], 10) || 50;
       if (this.emptyMm <= this.fullMm) { this.emptyMm = 300; this.fullMm = 50; }
       this.hello = true;
+      const modeTag = (p.length >= 6 ? p[5] : '').trim().toUpperCase();
+      this.deviceKind = (modeTag === 'DEMO') ? 'demo' : 'real';
+      this.lowFillStreak = 0;
+      if (this.deviceKind === 'demo') {
+        syncDemoDeviceIfNeeded();
+      }
     } else if (k === 'S' && p.length >= 7) {
-      this.lid = parseInt(p[2], 10) || 0;
-      this.dHand = parseInt(p[3], 10);
+      if (!this.hello) {
+        enqueueCommand('C,PING');
+        return;
+      }
+
+      const repLid = parseInt(p[2], 10) || 0;
+      const repDA = parseInt(p[4], 10);
+      const repDB = parseInt(p[5], 10);
       const f = Math.min(100, Math.max(0, parseInt(p[6], 10) || 0));
+
+      if (this.deviceKind === 'demo') {
+        const curDA = this.dA >= 0 ? Math.round(this.dA) : this.emptyMm;
+        const curDB = this.dB >= 0 ? Math.round(this.dB) : this.emptyMm;
+        if (f !== Math.round(this.fill) || repLid !== this.lid || repDA !== curDA || repDB !== curDB) {
+          syncDemoDeviceIfNeeded();
+        }
+        return;
+      }
+
+      this.lid = repLid;
+      this.dHand = parseInt(p[3], 10);
 
       if (Date.now() < this.ignoreStaleUntilRealMs && f > CFG.MIN_FILL_TO_COUNT) {
         return;
@@ -183,14 +211,17 @@ class Model {
         this.ignoreStaleUntilRealMs = 0;
       }
 
-      const nextDA = parseInt(p[4], 10);
-      const nextDB = parseInt(p[5], 10);
       const fillStatus = this.setFill(f, t, true);
       if (fillStatus === 'updated') {
-        this.dA = nextDA;
-        this.dB = nextDB;
+        this.dA = repDA;
+        this.dB = repDB;
       }
     } else if (k === 'E' && p.length >= 3) {
+      if (!this.hello) {
+        enqueueCommand('C,PING');
+        return;
+      }
+      if (this.deviceKind === 'demo') return;
       if (Date.now() < this.ignoreStaleUntilRealMs) return;
       this.onEvent(p, t);
     }
@@ -280,22 +311,12 @@ class Model {
     if (this.log.length > 200) this.log.shift();
   }
 
-  update(t) {
-    let nd = nextDeadline(this.lastDeadline);
-    while (nd <= t) {
-      if (!this.bagOutSinceDeadline && this.fillAt(nd) >= CFG.MIN_FILL_TO_COUNT) {
-        this.savedBags++;
-        this.addLog(nd, '収集日を見送り → 袋1枚節約');
-      }
-      this.bagOutSinceDeadline = false;
-      this.lastDeadline = nd;
-      nd = nextDeadline(nd);
-    }
-
+  computeRate(t) {
     const ws = Math.max(this.bagStart, t - 72 * HOUR_MS);
     const spanH = (t - ws) / HOUR_MS;
     const f0 = (ws === this.bagStart) ? 0 : this.fillAt(ws);
-    const cur = spanH > 0 ? (this.fill - f0) / spanH : 0;
+    const fNow = (t < vNow) ? this.fillAt(t) : this.fill;
+    const cur = spanH > 0 ? (fNow - f0) / spanH : 0;
 
     this.rate = -1;
     this.rateSrc = '';
@@ -311,6 +332,37 @@ class Model {
       this.rateSrc = `直近 ${Math.round(spanH)} 時間のたまり方`;
     }
     if (this.rate > 0) this.rate = Math.max(this.rate, 0.05);
+  }
+
+  update(t, demoAutoBagOut = false) {
+    let nd = nextDeadline(this.lastDeadline);
+    while (nd <= t) {
+      const fAtNd = this.fillAt(nd);
+      this.computeRate(nd);
+      const ndNext = nextDeadline(nd);
+      const projNext = (this.rate > 0) ? (fAtNd + (this.rate * (ndNext - nd)) / HOUR_MS) : -1;
+      const shouldTakeOut = (fAtNd >= 90) || (fAtNd >= CFG.MIN_FILL_TO_COUNT && projNext >= 100);
+
+      if (demoAutoBagOut && shouldTakeOut) {
+        const prevFill = Math.round(fAtNd);
+        demoSkew = 0;
+        this.onBagOut(nd, fAtNd);
+        this.saveState();
+        syncDemoDeviceIfNeeded();
+        this.pushToast(`収集日（${md(nd)} ${hm(nd)}）に袋を出しました（使用率 ${prevFill}%）`);
+      } else if (!this.bagOutSinceDeadline && fAtNd >= CFG.MIN_FILL_TO_COUNT) {
+        this.savedBags++;
+        this.addLog(nd, '収集日を見送り → 袋1枚節約');
+        if (demoAutoBagOut) {
+          this.pushToast(`収集日（${md(nd)} ${hm(nd)}）を見送り → 袋1枚節約`);
+        }
+      }
+      this.bagOutSinceDeadline = false;
+      this.lastDeadline = nd;
+      nd = ndNext;
+    }
+
+    this.computeRate(t);
 
     this.d1 = nextDeadline(t);
     this.d2 = nextDeadline(this.d1);
@@ -461,14 +513,25 @@ function isDeviceAlive() {
   return (Date.now() - model.lastRxRealMs) < 6000;
 }
 
+function getMode() {
+  if (!isDeviceAlive()) return 'demo_web';
+  return model.deviceKind === 'demo' ? 'demo_arduino' : 'real';
+}
+
+function isDemoMode() {
+  return getMode() !== 'real';
+}
+
 function enqueueCommand(cmd) {
   if (!isDeviceAlive()) return;
   const now = Date.now();
   const isAuto = cmd.startsWith('C,AUTO,');
+  const isSync = cmd.startsWith('C,SYNC,');
   commandQueue = commandQueue.filter(item =>
     (now - item.at) < CMD_TTL_MS &&
     item.cmd !== cmd &&
-    !(isAuto && item.cmd.startsWith('C,AUTO,'))
+    !(isAuto && item.cmd.startsWith('C,AUTO,')) &&
+    !(isSync && item.cmd.startsWith('C,SYNC,'))
   );
   commandQueue.push({ cmd, at: now });
 }
@@ -480,6 +543,61 @@ function dequeueCommand() {
     if ((now - item.at) < CMD_TTL_MS) return item.cmd;
   }
   return 'OK';
+}
+
+function syncDemoDeviceIfNeeded() {
+  if (getMode() === 'demo_arduino') {
+    const dA = model.dA >= 0 ? Math.round(model.dA) : model.emptyMm;
+    const dB = model.dB >= 0 ? Math.round(model.dB) : model.emptyMm;
+    enqueueCommand(`C,SYNC,${Math.round(model.fill)},${model.lid},${dA},${dB}`);
+  }
+}
+
+function scheduleNextDemoThrow(nowReal, nowV) {
+  if (timeScale <= 1) {
+    nextDemoThrowRealMs = nowReal + (12000 + Math.random() * 4000);
+  } else if (timeScale <= 60) {
+    nextDemoThrowRealMs = nowReal + (6000 + Math.random() * 2000);
+  } else {
+    nextDemoThrowVMs = nowV + (3.5 + Math.random() * 2.0) * HOUR_MS;
+  }
+}
+
+function performDemoThrow(t, manual = false) {
+  if (model.fill >= 100) {
+    if (manual) {
+      model.pushToast('すでに満杯（100%）です。「袋を出した (R)」で空にできます');
+    }
+    return false;
+  }
+  const beforeFill = model.fill;
+  let addPct;
+  if (manual) {
+    addPct = Math.floor(6 + Math.random() * 9);
+  } else if (timeScale <= 60) {
+    addPct = Math.floor(5 + Math.random() * 4);
+  } else {
+    addPct = 2 + Math.floor(Math.random() * 3);
+  }
+  const afterFill = Math.min(100, beforeFill + addPct);
+  const baseDist = model.distOf(afterFill);
+  demoSkew = Math.max(-18, Math.min(18, demoSkew + Math.round(Math.random() * 16 - 8)));
+
+  model.dA = Math.min(model.emptyMm, Math.max(model.fullMm, baseDist - demoSkew));
+  model.dB = Math.min(model.emptyMm, Math.max(model.fullMm, baseDist + demoSkew));
+  simLidUntilRealMs = Date.now() + (timeScale >= 21600 ? 400 : 1500);
+  model.lid = 2;
+
+  model.setFill(afterFill, t, false);
+  model.onEvent(
+    ['E', String(Date.now()), 'THROW', String(model.distOf(beforeFill)), String(baseDist)],
+    t
+  );
+  if (afterFill >= 100 && beforeFill < 100) {
+    model.onEvent(['E', String(Date.now()), 'FULL', '100', '0'], t);
+  }
+  syncDemoDeviceIfNeeded();
+  return true;
 }
 
 // 100msごとに時計とモデルを更新
@@ -496,14 +614,46 @@ setInterval(() => {
     }
   } else {
     vNow += dt * timeScale;
+  }
+
+  const demo = isDemoMode();
+  if (demo) {
+    const prevLid = model.lid;
+    model.lid = nowReal < simLidUntilRealMs ? 2 : 0;
+    if (prevLid !== model.lid) {
+      syncDemoDeviceIfNeeded();
+    }
+
+    if (model.fill < 100) {
+      if (timeScale <= 60) {
+        if (nowReal >= nextDemoThrowRealMs) {
+          performDemoThrow(vNow, false);
+          scheduleNextDemoThrow(nowReal, vNow);
+        }
+      } else {
+        let guard = 0;
+        while (nextDemoThrowVMs <= vNow && model.fill < 100 && guard < 4) {
+          const throwT = nextDemoThrowVMs;
+          model.update(throwT, true);
+          if (model.fill < 100) {
+            performDemoThrow(throwT, false);
+          }
+          scheduleNextDemoThrow(nowReal, throwT);
+          guard++;
+        }
+        if (nextDemoThrowVMs <= vNow) {
+          scheduleNextDemoThrow(nowReal, vNow);
+        }
+      }
+    } else {
+      scheduleNextDemoThrow(nowReal, vNow);
+    }
+  }
+
+  model.update(vNow, demo);
+  if (timeScale > 1) {
     model.addSample(vNow, model.fill);
   }
-
-  if (!isDeviceAlive()) {
-    model.lid = nowReal < simLidUntilRealMs ? 2 : 0;
-  }
-
-  model.update(vNow);
 
   if (nowReal - lastSaveRealMs > 60000) {
     model.saveState();
@@ -513,7 +663,7 @@ setInterval(() => {
 
 // ================= HTTP エンドポイント =================
 app.get('/healthz', (req, res) => {
-  res.status(200).json({ ok: true, alive: isDeviceAlive(), uptimeSec: Math.round(process.uptime()) });
+  res.status(200).json({ ok: true, alive: isDeviceAlive(), mode: getMode(), uptimeSec: Math.round(process.uptime()) });
 });
 
 app.post('/api/line', (req, res) => {
@@ -529,99 +679,104 @@ app.post('/api/action', (req, res) => {
   let payload = {};
   try { payload = JSON.parse(req.body); } catch (e) {}
   const { act, val } = payload;
-  const alive = isDeviceAlive();
+  const mode = getMode();
+  const demo = mode !== 'real';
 
   if (act === 'THROW') {
-    if (alive) {
-      enqueueCommand('C,THROW');
-      model.pushToast('実機に投入コマンドを送信しました');
-    } else {
-      if (model.fill >= 100) {
-        model.pushToast('すでに満杯（100%）です。「袋を出した (R)」で空にできます');
-      } else {
-        const beforeFill = model.fill;
-        const addPct = Math.floor(6 + Math.random() * 9);
-        const afterFill = Math.min(100, beforeFill + addPct);
-        const baseDist = model.distOf(afterFill);
-        const skew = Math.round(Math.random() * 22 - 11);
-
-        model.dA = Math.min(model.emptyMm, Math.max(model.fullMm, baseDist - skew));
-        model.dB = Math.min(model.emptyMm, Math.max(model.fullMm, baseDist + skew));
-        simLidUntilRealMs = Date.now() + 1500;
-        model.lid = 2;
-
-        model.setFill(afterFill, vNow);
-        model.onEvent(
-          ['E', String(Date.now()), 'THROW', String(model.distOf(beforeFill)), String(baseDist)],
-          vNow
-        );
-        if (afterFill >= 100 && beforeFill < 100) {
-          model.onEvent(['E', String(Date.now()), 'FULL', '100', '0'], vNow);
-        }
-      }
+    if (!demo) {
+      model.pushToast('実機接続中はデモ投入ボタンは使えません');
+    } else if (performDemoThrow(vNow, true)) {
+      scheduleNextDemoThrow(Date.now(), vNow);
     }
   } else if (act === 'RESET') {
-    if (alive) {
-      enqueueCommand('C,RESET');
-      model.ignoreStaleUntilRealMs = Date.now() + 4000;
+    if (!demo) {
+      model.pushToast('実機接続中はデモ用の袋交換ボタンは使えません');
+    } else {
+      const prevFill = Math.round(model.fill);
+      simLidUntilRealMs = 0;
+      model.lid = 0;
+      demoSkew = 0;
+      model.onBagOut(vNow, model.fill);
+      model.saveState();
+      scheduleNextDemoThrow(Date.now(), vNow);
+      syncDemoDeviceIfNeeded();
+      model.pushToast(
+        prevFill >= CFG.MIN_FILL_TO_COUNT
+          ? `袋を出しました（使用率 ${prevFill}%・0%から再スタート）`
+          : '袋を新しくしました（0%から再スタート）'
+      );
     }
-    simLidUntilRealMs = 0;
-    model.lid = 0;
-    model.onBagOut(vNow, model.fill);
-    model.saveState();
-    model.pushToast('袋を出しました（0%から再スタート）');
   } else if (act === 'OPEN') {
-    if (alive) {
+    if (!demo) {
       enqueueCommand('C,OPEN');
     } else {
       simLidUntilRealMs = Date.now() + 2500;
       model.lid = 2;
-      model.pushToast('フタを開けました（Web模擬）');
+      syncDemoDeviceIfNeeded();
+      model.pushToast('フタを開けました（デモ）');
     }
   } else if (act === 'CLOSE') {
-    if (alive) {
+    if (!demo) {
       enqueueCommand('C,CLOSE');
     } else {
       simLidUntilRealMs = 0;
       model.lid = 0;
-      model.pushToast('フタを閉じました（Web模擬）');
+      syncDemoDeviceIfNeeded();
+      model.pushToast('フタを閉じました（デモ）');
     }
   } else if (act === 'CAL_EMPTY') {
-    if (alive) {
+    if (mode === 'real') {
       enqueueCommand('C,CAL,EMPTY');
       model.pushToast('いまの距離を「空」の基準にしました');
     } else {
       model.pushToast('実機接続時のみ基準設定できます');
     }
   } else if (act === 'CAL_FULL') {
-    if (alive) {
+    if (mode === 'real') {
       enqueueCommand('C,CAL,FULL');
       model.pushToast('いまの距離を「満杯」の基準にしました');
     } else {
       model.pushToast('実機接続時のみ基準設定できます');
     }
   } else if (act === 'AUTO') {
-    autoLid = !autoLid;
-    if (alive) enqueueCommand(`C,AUTO,${autoLid ? 1 : 0}`);
-    model.pushToast(autoLid ? '自動開閉 ON' : '自動開閉 OFF');
+    if (mode === 'real') {
+      autoLid = !autoLid;
+      enqueueCommand(`C,AUTO,${autoLid ? 1 : 0}`);
+      model.pushToast(autoLid ? '自動開閉 ON' : '自動開閉 OFF');
+    } else {
+      model.pushToast('実機接続時のみ自動開閉を切り替えられます');
+    }
   } else if (act === 'SPEED') {
     const idx = Math.min(SPEED_SCALES.length - 1, Math.max(0, Number(val) || 0));
     timeScale = SPEED_SCALES[idx];
+    scheduleNextDemoThrow(Date.now(), vNow);
     model.pushToast(`時間の速さ：${SPEED_NAMES[idx]}`);
   } else if (act === 'RESET_CLOCK') {
     timeScale = 1;
     vNow = Date.now();
     commandQueue = [];
-    if (alive) enqueueCommand('C,RESET');
+    demoSkew = 0;
+    simLidUntilRealMs = 0;
     const keepEmpty = model.emptyMm;
     const keepFull = model.fullMm;
+    const keepKind = model.deviceKind;
+    const keepLastRx = model.lastRxRealMs;
+    const keepHello = model.hello;
     model = new Model(vNow);
     model.emptyMm = keepEmpty;
     model.fullMm = keepFull;
-    model.update(vNow);
-    if (alive) model.ignoreStaleUntilRealMs = Date.now() + 4000;
-    simLidUntilRealMs = 0;
+    model.deviceKind = keepKind;
+    model.lastRxRealMs = keepLastRx;
+    model.hello = keepHello;
+    model.update(vNow, false);
     model.saveState();
+    scheduleNextDemoThrow(Date.now(), vNow);
+    if (mode === 'real') {
+      enqueueCommand('C,RESET');
+      model.ignoreStaleUntilRealMs = Date.now() + 4000;
+    } else if (mode === 'demo_arduino') {
+      syncDemoDeviceIfNeeded();
+    }
     model.pushToast('時計と記録を0からリセットしました');
   }
 
@@ -644,6 +799,8 @@ app.get('/api/state', (req, res) => {
     timeScale,
     vNow,
     alive: isDeviceAlive(),
+    mode: getMode(),
+    isDemo: isDemoMode(),
     errActive: (model.errCode > 0 && nowReal - model.errRealMs < 15000) ? model.errCode : 0,
     model: {
       emptyMm: model.emptyMm,

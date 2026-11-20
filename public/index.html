@@ -416,15 +416,20 @@
       <button class="ctrl" id="sp3" onclick="sendAct('SPEED', 3)">×21600 1秒=6時間 (4)</button>
       <button class="ctrl" id="sp4" onclick="sendAct('SPEED', 4)">×86400 1秒=1日 (5)</button>
 
+      <span id="demoControls" class="ctrl-group">
+        <span style="opacity:0.4; margin:0 4px;">|</span>
+        <span style="font-weight:700; margin-right:2px;">デモ操作:</span>
+        <button class="ctrl" onclick="sendAct('THROW')">投入 (T)</button>
+        <button class="ctrl" onclick="sendAct('RESET')">袋を出した (R)</button>
+      </span>
       <span style="opacity:0.4; margin:0 4px;">|</span>
-
-      <button class="ctrl" onclick="sendAct('THROW')">投入 (T)</button>
-      <button class="ctrl" onclick="sendAct('RESET')">袋を出した (R)</button>
       <button class="ctrl" onclick="sendAct('OPEN')">フタ開 (O)</button>
       <button class="ctrl" onclick="sendAct('CLOSE')">フタ閉 (C)</button>
-      <button class="ctrl" onclick="sendAct('CAL_EMPTY')">空基準 (E)</button>
-      <button class="ctrl" onclick="sendAct('CAL_FULL')">満杯基準 (F)</button>
-      <button class="ctrl" onclick="sendAct('AUTO')" id="btnAuto">自動開閉: ON (A)</button>
+      <span id="realControls" class="ctrl-group" style="display:none;">
+        <button class="ctrl" onclick="sendAct('CAL_EMPTY')">空基準 (E)</button>
+        <button class="ctrl" onclick="sendAct('CAL_FULL')">満杯基準 (F)</button>
+        <button class="ctrl" onclick="sendAct('AUTO')" id="btnAuto">自動開閉: ON (A)</button>
+      </span>
       <button class="ctrl warn" onclick="sendAct('RESET_CLOCK')">記録リセット (0)</button>
     </div>
     <div id="trackedText" style="opacity:0.75;">記録 0.0 日</div>
@@ -514,13 +519,14 @@ async function sendAct(act, val) {
 window.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
   const k = e.key.toLowerCase();
-  if (k === 't') sendAct('THROW');
-  else if (k === 'r') sendAct('RESET');
+  const isDemo = latestData ? Boolean(latestData.isDemo) : true;
+  if (k === 't' && isDemo) sendAct('THROW');
+  else if (k === 'r' && isDemo) sendAct('RESET');
   else if (k === 'o') sendAct('OPEN');
   else if (k === 'c') sendAct('CLOSE');
-  else if (k === 'e') sendAct('CAL_EMPTY');
-  else if (k === 'f') sendAct('CAL_FULL');
-  else if (k === 'a') sendAct('AUTO');
+  else if (k === 'e' && !isDemo) sendAct('CAL_EMPTY');
+  else if (k === 'f' && !isDemo) sendAct('CAL_FULL');
+  else if (k === 'a' && !isDemo) sendAct('AUTO');
   else if (k === '0') sendAct('RESET_CLOCK');
   else if (k >= '1' && k <= '5') sendAct('SPEED', parseInt(k, 10) - 1);
 });
@@ -549,10 +555,17 @@ function getSpeedIndex(scale) {
 }
 
 function updateDOM(data) {
-  const { cfg, autoLid, timeScale, vNow, alive, errActive, model: m } = data;
+  const { cfg, autoLid, timeScale, vNow, alive, mode, errActive, model: m } = data;
   const spIdx = getSpeedIndex(timeScale);
+  const isDemo = (typeof data.isDemo === 'boolean') ? data.isDemo : !alive;
 
-  document.getElementById('liveBadge').textContent = alive ? 'LIVE  WIFI' : 'NO SIGNAL';
+  const liveBadge = document.getElementById('liveBadge');
+  if (mode === 'real') liveBadge.textContent = 'LIVE  WIFI';
+  else if (mode === 'demo_arduino') liveBadge.textContent = 'LIVE  WIFI  DEMO';
+  else liveBadge.textContent = 'NO SIGNAL  DEMO';
+
+  document.getElementById('demoControls').style.display = isDemo ? 'inline-flex' : 'none';
+  document.getElementById('realControls').style.display = isDemo ? 'none' : 'inline-flex';
 
   const speedBadge = document.getElementById('speedBadge');
   if (timeScale > 1) {
