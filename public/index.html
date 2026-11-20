@@ -489,7 +489,16 @@ function getSmoothVNow() {
   return latestData.vNow + elapsed * latestData.timeScale;
 }
 
+const CONFIRM_MESSAGES = {
+  RESET_CLOCK: '時計とこれまでの記録をすべて 0 からリセットしますか？',
+  CAL_EMPTY: '現在のセンサ距離を「空（0%）」の基準として保存しますか？',
+  CAL_FULL: '現在のセンサ距離を「満杯（100%）」の基準として保存しますか？'
+};
+
 async function sendAct(act, val) {
+  if (CONFIRM_MESSAGES[act] && !window.confirm(CONFIRM_MESSAGES[act])) {
+    return;
+  }
   try {
     await fetch('/api/action', {
       method: 'POST',
@@ -503,7 +512,7 @@ async function sendAct(act, val) {
 }
 
 window.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT') return;
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
   const k = e.key.toLowerCase();
   if (k === 't') sendAct('THROW');
   else if (k === 'r') sendAct('RESET');
