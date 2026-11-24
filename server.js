@@ -661,7 +661,7 @@ app.post('/api/line', (req, res) => {
     model.handleLine(line, vNow);
   }
   const nextCmd = dequeueCommand();
-  res.type('text/plain').send(nextCmd);
+  res.type('text/plain').send(nextCmd + '\n');
 });
 
 app.post('/api/action', (req, res) => {
