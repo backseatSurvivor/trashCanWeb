@@ -56,7 +56,6 @@ let lastTickRealMs = Date.now();
 let lastSaveRealMs = Date.now();
 let simLidUntilRealMs = 0;
 let commandQueue = [];
-let demoSkew = 0;
 let nextDemoThrowRealMs = Date.now() + 5000;
 let nextDemoThrowVMs = vNow + 4 * HOUR_MS;
 
@@ -111,8 +110,7 @@ class Model {
     this.emptyMm = 300;
     this.fullMm = 50;
     this.fill = 0;
-    this.dA = -1;
-    this.dB = -1;
+    this.dInner = -1;
     this.dHand = -1;
     this.lid = 0;
     this.hello = false;
@@ -188,14 +186,12 @@ class Model {
       }
 
       const repLid = parseInt(p[2], 10) || 0;
-      const repDA = parseInt(p[4], 10);
-      const repDB = parseInt(p[5], 10);
+      const repDist = parseInt(p[4], 10);
       const f = Math.min(100, Math.max(0, parseInt(p[6], 10) || 0));
 
       if (this.deviceKind === 'demo') {
-        const curDA = this.dA >= 0 ? Math.round(this.dA) : this.emptyMm;
-        const curDB = this.dB >= 0 ? Math.round(this.dB) : this.emptyMm;
-        if (f !== Math.round(this.fill) || repLid !== this.lid || repDA !== curDA || repDB !== curDB) {
+        const curDist = this.dInner >= 0 ? Math.round(this.dInner) : this.emptyMm;
+        if (f !== Math.round(this.fill) || repLid !== this.lid || repDist !== curDist) {
           syncDemoDeviceIfNeeded();
         }
         return;
@@ -213,8 +209,7 @@ class Model {
 
       const fillStatus = this.setFill(f, t, true);
       if (fillStatus === 'updated') {
-        this.dA = repDA;
-        this.dB = repDB;
+        this.dInner = repDist;
       }
     } else if (k === 'E' && p.length >= 3) {
       if (!this.hello) {
@@ -266,8 +261,7 @@ class Model {
       this.errCode = v1;
       this.errRealMs = Date.now();
       const errMap = {
-        1: '内側センサ A が測れていません',
-        2: '内側センサ B が測れていません',
+        1: '内側センサが測れていません',
         3: '外側センサ（手の検知）が測れていません'
       };
       this.evToast(errMap[v1] || `センサの異常（${v1}）`);
@@ -286,8 +280,7 @@ class Model {
     this.bagStart = t;
     this.bagOutSinceDeadline = true;
     this.fill = 0;
-    this.dA = this.emptyMm;
-    this.dB = this.emptyMm;
+    this.dInner = this.emptyMm;
     this.addSample(t, 0);
   }
 
@@ -345,7 +338,6 @@ class Model {
 
       if (demoAutoBagOut && shouldTakeOut) {
         const prevFill = Math.round(fAtNd);
-        demoSkew = 0;
         this.onBagOut(nd, fAtNd);
         this.saveState();
         syncDemoDeviceIfNeeded();
@@ -547,9 +539,8 @@ function dequeueCommand() {
 
 function syncDemoDeviceIfNeeded() {
   if (getMode() === 'demo_arduino') {
-    const dA = model.dA >= 0 ? Math.round(model.dA) : model.emptyMm;
-    const dB = model.dB >= 0 ? Math.round(model.dB) : model.emptyMm;
-    enqueueCommand(`C,SYNC,${Math.round(model.fill)},${model.lid},${dA},${dB}`);
+    const dInner = model.dInner >= 0 ? Math.round(model.dInner) : model.emptyMm;
+    enqueueCommand(`C,SYNC,${Math.round(model.fill)},${model.lid},${dInner},-1`);
   }
 }
 
@@ -581,10 +572,8 @@ function performDemoThrow(t, manual = false) {
   }
   const afterFill = Math.min(100, beforeFill + addPct);
   const baseDist = model.distOf(afterFill);
-  demoSkew = Math.max(-18, Math.min(18, demoSkew + Math.round(Math.random() * 16 - 8)));
 
-  model.dA = Math.min(model.emptyMm, Math.max(model.fullMm, baseDist - demoSkew));
-  model.dB = Math.min(model.emptyMm, Math.max(model.fullMm, baseDist + demoSkew));
+  model.dInner = Math.min(model.emptyMm, Math.max(model.fullMm, baseDist));
   simLidUntilRealMs = Date.now() + (timeScale >= 21600 ? 400 : 1500);
   model.lid = 2;
 
@@ -695,7 +684,6 @@ app.post('/api/action', (req, res) => {
       const prevFill = Math.round(model.fill);
       simLidUntilRealMs = 0;
       model.lid = 0;
-      demoSkew = 0;
       model.onBagOut(vNow, model.fill);
       model.saveState();
       scheduleNextDemoThrow(Date.now(), vNow);
@@ -755,7 +743,6 @@ app.post('/api/action', (req, res) => {
     timeScale = 1;
     vNow = Date.now();
     commandQueue = [];
-    demoSkew = 0;
     simLidUntilRealMs = 0;
     const keepEmpty = model.emptyMm;
     const keepFull = model.fullMm;
@@ -806,10 +793,8 @@ app.get('/api/state', (req, res) => {
       emptyMm: model.emptyMm,
       fullMm: model.fullMm,
       fill: model.fill,
-      dA: model.dA,
-      dB: model.dB,
-      pctA: model.pctOf(model.dA),
-      pctB: model.pctOf(model.dB),
+      dInner: model.dInner,
+      pctInner: model.pctOf(model.dInner),
       lid: model.lid,
       rate: model.rate,
       rateSrc: model.rateSrc,
